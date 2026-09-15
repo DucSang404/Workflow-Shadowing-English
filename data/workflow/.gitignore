@@ -1,0 +1,6 @@
+.env
+n8n_data/
+work/
+output/
+*.mp3
+*.mp4

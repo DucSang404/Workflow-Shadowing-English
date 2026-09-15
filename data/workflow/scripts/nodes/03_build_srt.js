@@ -1,0 +1,78 @@
+// Lays the probed sentences on a timeline and writes both the .srt and the
+// ffmpeg plan. This node and build_video.js must agree on the arithmetic, so
+// the single rule is: sentence i starts at the sum of every earlier
+// (duration + gap). build_video.js realises exactly that with apad+concat.
+//
+// Timing comes from the PCM durations probe_durations.js measured, not from the
+// mp3 headers - see the comment there for why that matters.
+const fs = require('fs');
+const cfg = $('Prepare Run').first().json;
+
+const probeRaw = $input.first().json.stdout;
+if (!probeRaw) {
+  throw new Error(`duration probe produced no output: ${JSON.stringify($input.first().json).slice(0, 300)}`);
+}
+const probe = JSON.parse(probeRaw);
+
+const segments = (probe.segments ?? []).sort((a, b) => a.idx - b.idx);
+const skipped = probe.missing ?? [];
+if (!segments.length) {
+  throw new Error('every sentence failed TTS - nothing to build a video from');
+}
+
+const gap = cfg.gapSeconds;
+const CUE_GUARD = 0.08; // keeps consecutive cues from touching
+
+/** seconds -> SRT timestamp (HH:MM:SS,mmm) */
+function srtTime(sec) {
+  const total = Math.max(0, Math.round(sec * 1000));
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return [
+    pad(Math.floor(total / 3600000)),
+    pad(Math.floor((total % 3600000) / 60000)),
+    pad(Math.floor((total % 60000) / 1000)),
+  ].join(':') + ',' + pad(total % 1000, 3);
+}
+
+let cursor = 0;
+const cues = segments.map((seg, i) => {
+  const start = cursor;
+  // The cue deliberately stays up through the silence: the learner is repeating
+  // the line during that gap and still needs to read it.
+  const end = start + seg.duration + gap - CUE_GUARD;
+  cursor = start + seg.duration + gap;
+  return { index: i + 1, idx: seg.idx, start, end, en: seg.en, vi: seg.vi };
+});
+
+const srt = cues
+  .map((c) => `${c.index}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.en}${c.vi ? `\n${c.vi}` : ''}\n`)
+  .join('\n');
+
+fs.writeFileSync(cfg.srtPath, srt, 'utf8');
+
+const plan = {
+  workDir: cfg.workDir,
+  srtPath: cfg.srtPath,
+  outputPath: cfg.outputPath,
+  gapSeconds: gap,
+  background: cfg.background,
+  width: cfg.width,
+  height: cfg.height,
+  segments: segments.map((s) => ({ idx: s.idx, wav: s.wav, duration: s.duration })),
+};
+fs.writeFileSync(cfg.planPath, JSON.stringify(plan, null, 2), 'utf8');
+
+if (skipped.length) {
+  console.log(`[shadowing] run ${cfg.runId}: skipped ${skipped.length} sentence(s):`,
+    JSON.stringify(skipped));
+}
+
+return [{
+  json: {
+    planPath: cfg.planPath,
+    srtPath: cfg.srtPath,
+    cueCount: cues.length,
+    skipped,
+    expectedDurationSec: Math.round(cursor * 100) / 100,
+  },
+}];
