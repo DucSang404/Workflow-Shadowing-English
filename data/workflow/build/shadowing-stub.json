@@ -1,5 +1,7 @@
 {
-  "name": "AI Shadowing Video Generator",
+  "name": "AI Shadowing Video Generator (stub)",
+  "slug": "shadowing-stub",
+  "webhookPath": "shadowing-stub",
   "nodes": [
     {
       "id": "n-webhook",
@@ -10,10 +12,10 @@
         -620,
         0
       ],
-      "webhookId": "a7c3f1e2-9b44-4d10-8e55-6f2b1c0d9a31",
+      "webhookId": "b1d4e5f6-0c77-4a22-9b33-8e1a2d3c4b55",
       "parameters": {
         "httpMethod": "POST",
-        "path": "shadowing",
+        "path": "shadowing-stub",
         "responseMode": "responseNode",
         "options": {}
       }
@@ -35,32 +37,15 @@
     {
       "id": "n-groq",
       "name": "Generate Dialogue",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         -180,
         0
       ],
-      "retryOnFail": true,
-      "maxTries": 5,
-      "waitBetweenTries": 5000,
       "parameters": {
-        "method": "POST",
-        "url": "https://api.groq.com/openai/v1/chat/completions",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "groqApi",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: \"openai/gpt-oss-120b\",\n  temperature: 0.8,\n  max_tokens: 900,\n  reasoning_effort: \"low\",\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: \"system\", content: \"You write short, natural English conversations for listening-and-shadowing practice.\\nReturn ONLY a JSON object of this shape:\\n{\\\"sentences\\\":[{\\\"en\\\":\\\"<one English line>\\\",\\\"vi\\\":\\\"<natural Vietnamese translation>\\\"}]}\\nRules:\\n- Everyday spoken register, the kind of thing people actually say. No textbook stiffness.\\n- The lines must form ONE coherent two-person exchange on the given topic, in order.\\n- 8 to 16 words per line, so a learner can repeat each one in a single breath.\\n- Plain words only: no emoji, no markdown, no bracketed speaker labels.\\n- The Vietnamese must read like natural Vietnamese, not a word-for-word gloss.\" },\n    { role: \"user\", content: \"Topic: \" + $json.topic + \"\\nWrite exactly \" + $json.sentenceCount + \" sentences.\" }\n  ]\n}) }}",
-        "options": {
-          "timeout": 60000
-        }
-      },
-      "credentials": {
-        "groqApi": {
-          "id": "fAvpIJn9ncZ63hlA",
-          "name": "Groq API"
-        }
+        "mode": "runOnceForAllItems",
+        "jsCode": "// STUB: stands in for the Groq call so the rest of the pipeline can be\n// proven without spending free-tier quota. Edited via host/workflows/shadowing-stub.js.\nreturn [{ json: { choices: [{ message: { content: \"{\\\"sentences\\\":[{\\\"en\\\":\\\"Hi there, could I get a large iced latte, please?\\\",\\\"vi\\\":\\\"Chào bạn, cho tôi một ly latte đá lớn nhé?\\\"},{\\\"en\\\":\\\"Sure thing. Would you like any syrup with that?\\\",\\\"vi\\\":\\\"Được thôi. Bạn có muốn thêm siro không?\\\"},{\\\"en\\\":\\\"Just a little vanilla, and can you make it less sweet?\\\",\\\"vi\\\":\\\"Một chút vani thôi, và làm ít ngọt giúp tôi được không?\\\"},{\\\"en\\\":\\\"No problem. That comes to $5.75 altogether.\\\",\\\"vi\\\":\\\"Không vấn đề gì. Tổng cộng là 5,75 đô la.\\\"},{\\\"en\\\":\\\"Here you go. Do you take cards, or is it cash only?\\\",\\\"vi\\\":\\\"Của bạn đây. Bạn nhận thẻ hay chỉ tiền mặt?\\\"},{\\\"en\\\":\\\"Cards are fine. Your drink will be ready in 3 minutes.\\\",\\\"vi\\\":\\\"Thẻ cũng được. Đồ uống của bạn sẽ xong sau 3 phút.\\\"}]}\" } }] } }];"
       }
     },
     {
@@ -177,7 +162,7 @@
       ],
       "parameters": {
         "executeOnce": true,
-        "command": "=node /data/workflow/scripts/probe_durations.js '{{ $('Prepare Run').first().json.workDir }}'"
+        "command": "=node /data/workflow/container/cli/probe_durations.js '{{ $('Prepare Run').first().json.workDir }}'"
       }
     },
     {
@@ -205,7 +190,7 @@
       ],
       "parameters": {
         "executeOnce": true,
-        "command": "=node /data/workflow/scripts/build_video.js '{{ $json.planPath }}'"
+        "command": "=node /data/workflow/container/cli/build_video.js '{{ $json.planPath }}'"
       }
     },
     {

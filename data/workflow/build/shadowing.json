@@ -1,0 +1,371 @@
+{
+  "name": "AI Shadowing Video Generator",
+  "slug": "shadowing",
+  "webhookPath": "shadowing",
+  "nodes": [
+    {
+      "id": "n-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -620,
+        0
+      ],
+      "webhookId": "a7c3f1e2-9b44-4d10-8e55-6f2b1c0d9a31",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shadowing",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "n-prepare",
+      "name": "Prepare Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the webhook payload and stakes out a per-run work directory.\n// Everything downstream reads its paths from here, so a run never collides\n// with a concurrent one.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\n\nconst raw = $input.first().json;\nconst body = raw.body ?? raw ?? {};\n\nconst topic = String(body.topic ?? '').trim();\nif (!topic) {\n  throw new Error('`topic` is required — POST e.g. {\"topic\":\"ordering coffee\"}');\n}\nif (topic.length > 120) {\n  throw new Error('`topic` must be 120 characters or fewer');\n}\n\nconst clamp = (value, lo, hi, fallback) => {\n  const n = Number(value);\n  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;\n};\n\nconst stamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);\nconst runId = `${stamp}_${Math.random().toString(36).slice(2, 8)}`;\nconst workDir = `${ROOT}/work/${runId}`;\nfs.mkdirSync(workDir, { recursive: true });\n\nreturn [{\n  json: {\n    runId,\n    workDir,\n    manifestPath: `${workDir}/manifest.json`,\n    srtPath: `${workDir}/subtitle.srt`,\n    planPath: `${workDir}/plan.json`,\n    outputPath: `${ROOT}/output/${runId}.mp4`,\n    topic,\n    sentenceCount: Math.round(clamp(body.sentenceCount, 5, 8, 6)),\n    gapSeconds: clamp(body.gapSeconds, 1, 10, 2.5),\n    voice: String(body.voice ?? 'en-US-AvaNeural'),\n    speed: clamp(body.speed, 0.5, 1.5, 0.9),\n    background: String(body.background ?? ''),\n    width: 1280,\n    height: 720,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "n-groq",
+      "name": "Generate Dialogue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -180,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"openai/gpt-oss-120b\",\n  temperature: 0.8,\n  max_tokens: 900,\n  reasoning_effort: \"low\",\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: \"system\", content: \"You write short, natural English conversations for listening-and-shadowing practice.\\nReturn ONLY a JSON object of this shape:\\n{\\\"sentences\\\":[{\\\"en\\\":\\\"<one English line>\\\",\\\"vi\\\":\\\"<natural Vietnamese translation>\\\"}]}\\nRules:\\n- Everyday spoken register, the kind of thing people actually say. No textbook stiffness.\\n- The lines must form ONE coherent two-person exchange on the given topic, in order.\\n- 8 to 16 words per line, so a learner can repeat each one in a single breath.\\n- Plain words only: no emoji, no markdown, no bracketed speaker labels.\\n- The Vietnamese must read like natural Vietnamese, not a word-for-word gloss.\" },\n    { role: \"user\", content: \"Topic: \" + $json.topic + \"\\nWrite exactly \" + $json.sentenceCount + \" sentences.\" }\n  ]\n}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "groqApi": {
+          "id": "fAvpIJn9ncZ63hlA",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "id": "n-parse",
+      "name": "Parse & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Turns the Groq completion into one item per sentence, and writes the manifest\n// the media scripts read.\n//\n// Two texts are kept per sentence on purpose:\n//   `en`       - verbatim, this is what gets burned into the subtitle\n//   `ttsText`  - normalised, this is what edge-tts is asked to say\n// Neural TTS mangles digits, symbols and emoji (\"$3.50\" becomes \"dollar three\n// point five zero\"), so numerals are spelled out and anything unspeakable is\n// dropped before synthesis - without disturbing what the learner reads.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\n\n// ---------- number spelling ----------------------------------------------\nconst ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',\n  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',\n  'eighteen', 'nineteen'];\nconst TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];\n\nfunction spellInt(n) {\n  if (n < 0) return `minus ${spellInt(-n)}`;\n  if (n < 20) return ONES[n];\n  if (n < 100) return TENS[Math.floor(n / 10)] + (n % 10 ? `-${ONES[n % 10]}` : '');\n  if (n < 1000) {\n    return `${ONES[Math.floor(n / 100)]} hundred` + (n % 100 ? ` and ${spellInt(n % 100)}` : '');\n  }\n  if (n < 1000000) {\n    return `${spellInt(Math.floor(n / 1000))} thousand` + (n % 1000 ? ` ${spellInt(n % 1000)}` : '');\n  }\n  return String(n); // beyond small talk; leave it alone rather than mangle it\n}\n\nfunction normalizeForTts(input) {\n  let t = String(input).normalize('NFC');\n\n  // Typographic characters the voice reads as literal noise.\n  t = t.replace(/[‘’‛]/g, \"'\")\n    .replace(/[“”]/g, '\"')\n    .replace(/[–—]/g, ', ')\n    .replace(/…/g, '.');\n\n  // Emoji, pictographs, variation selectors and zero-width joiners.\n  t = t.replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE00}-\\u{FE0F}\\u{200B}-\\u{200D}]/gu, '');\n\n  // Markdown emphasis leaking out of the model.\n  t = t.replace(/[*_`#>]/g, '');\n\n  // Money first: \"$3.50\" -> \"three dollars fifty cents\".\n  t = t.replace(/\\$\\s?(\\d+)(?:\\.(\\d{2}))?/g, (_, d, c) => {\n    const dollars = `${spellInt(Number(d))} ${Number(d) === 1 ? 'dollar' : 'dollars'}`;\n    return c && Number(c) ? `${dollars} ${spellInt(Number(c))} cents` : dollars;\n  });\n\n  // Clock times: \"3:30\" -> \"three thirty\", \"7:00\" -> \"seven o'clock\".\n  t = t.replace(/\\b(\\d{1,2}):(\\d{2})\\b/g, (_, h, m) => (Number(m) === 0\n    ? `${spellInt(Number(h))} o'clock`\n    : `${spellInt(Number(h))} ${spellInt(Number(m))}`));\n\n  // \"3pm\" -> \"three p m\" (spaced so the voice says the letters).\n  t = t.replace(/\\b(\\d{1,2})\\s?(am|pm)\\b/gi,\n    (_, h, s) => `${spellInt(Number(h))} ${s.toLowerCase().split('').join(' ')}`);\n\n  // Percentages, then any bare integer left over.\n  t = t.replace(/\\b(\\d+)\\s?%/g, (_, d) => `${spellInt(Number(d))} percent`);\n  t = t.replace(/\\b\\d+\\b/g, (m) => spellInt(Number(m)));\n\n  // Anything remaining that is not speech or punctuation the voice honours.\n  t = t.replace(/[^A-Za-z0-9 '.,!?;:-]/g, ' ');\n\n  return t.replace(/\\s+/g, ' ').replace(/\\s+([.,!?;:])/g, '$1').trim();\n}\n\n// ---------- pull the payload out of the completion ------------------------\nconst completion = $input.first().json;\nconst content = completion?.choices?.[0]?.message?.content;\nif (!content) {\n  throw new Error(`Groq returned no content: ${JSON.stringify(completion).slice(0, 400)}`);\n}\n\nlet parsed;\ntry {\n  parsed = JSON.parse(content);\n} catch (err) {\n  // json_object mode is usually clean, but a fenced block still shows up sometimes.\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (!match) throw new Error(`Groq content is not JSON: ${content.slice(0, 300)}`);\n  parsed = JSON.parse(match[0]);\n}\n\nconst rows = Array.isArray(parsed.sentences) ? parsed.sentences : [];\nif (rows.length < 5) {\n  throw new Error(`expected at least 5 sentences, got ${rows.length}`);\n}\n\nconst sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {\n  const en = String(row.en ?? row.english ?? '').trim();\n  const vi = String(row.vi ?? row.vietnamese ?? '').trim();\n  if (!en) throw new Error(`sentence ${i + 1} has no English text`);\n  return { idx: i + 1, en, vi, ttsText: normalizeForTts(en) };\n});\n\nfs.writeFileSync(\n  cfg.manifestPath,\n  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, sentences }, null, 2),\n  'utf8',\n);\n\nreturn sentences.map((s) => ({ json: { ...s, voice: cfg.voice, speed: cfg.speed } }));\n"
+      }
+    },
+    {
+      "id": "n-tts",
+      "name": "Synthesize Speech",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        260,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://edge-tts:5050/v1/audio/speech",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"tts-1\",\n  input: $json.ttsText,\n  voice: $json.voice,\n  response_format: \"mp3\",\n  speed: $json.speed\n}) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sljX7TOsMg9Bq6aw",
+          "name": "EdgeTTS Header Auth"
+        }
+      }
+    },
+    {
+      "id": "n-filter",
+      "name": "Keep Successful Audio",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-audio",
+              "leftValue": "={{ Object.keys($binary || {}).length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "n-write",
+      "name": "Write Sentence Audio",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Prepare Run').first().json.workDir }}/sent_{{ String($('Parse & Normalize').item.json.idx).padStart(3, '0') }}.mp3",
+        "dataPropertyName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "n-probe",
+      "name": "Probe Durations",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        920,
+        0
+      ],
+      "parameters": {
+        "executeOnce": true,
+        "command": "=node /data/workflow/container/cli/probe_durations.js '{{ $('Prepare Run').first().json.workDir }}'"
+      }
+    },
+    {
+      "id": "n-srt",
+      "name": "Build SRT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Lays the probed sentences on a timeline and writes both the .srt and the\n// ffmpeg plan. This node and build_video.js must agree on the arithmetic, so\n// the single rule is: sentence i starts at the sum of every earlier\n// (duration + gap). build_video.js realises exactly that with apad+concat.\n//\n// Timing comes from the PCM durations probe_durations.js measured, not from the\n// mp3 headers - see the comment there for why that matters.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\n\nconst probeRaw = $input.first().json.stdout;\nif (!probeRaw) {\n  throw new Error(`duration probe produced no output: ${JSON.stringify($input.first().json).slice(0, 300)}`);\n}\nconst probe = JSON.parse(probeRaw);\n\nconst segments = (probe.segments ?? []).sort((a, b) => a.idx - b.idx);\nconst skipped = probe.missing ?? [];\nif (!segments.length) {\n  throw new Error('every sentence failed TTS - nothing to build a video from');\n}\n\nconst gap = cfg.gapSeconds;\nconst CUE_GUARD = 0.08; // keeps consecutive cues from touching\n\n/** seconds -> SRT timestamp (HH:MM:SS,mmm) */\nfunction srtTime(sec) {\n  const total = Math.max(0, Math.round(sec * 1000));\n  const pad = (n, w = 2) => String(n).padStart(w, '0');\n  return [\n    pad(Math.floor(total / 3600000)),\n    pad(Math.floor((total % 3600000) / 60000)),\n    pad(Math.floor((total % 60000) / 1000)),\n  ].join(':') + ',' + pad(total % 1000, 3);\n}\n\nlet cursor = 0;\nconst cues = segments.map((seg, i) => {\n  const start = cursor;\n  // The cue deliberately stays up through the silence: the learner is repeating\n  // the line during that gap and still needs to read it.\n  const end = start + seg.duration + gap - CUE_GUARD;\n  cursor = start + seg.duration + gap;\n  return { index: i + 1, idx: seg.idx, start, end, en: seg.en, vi: seg.vi };\n});\n\nconst srt = cues\n  .map((c) => `${c.index}\\n${srtTime(c.start)} --> ${srtTime(c.end)}\\n${c.en}${c.vi ? `\\n${c.vi}` : ''}\\n`)\n  .join('\\n');\n\nfs.writeFileSync(cfg.srtPath, srt, 'utf8');\n\nconst plan = {\n  workDir: cfg.workDir,\n  srtPath: cfg.srtPath,\n  outputPath: cfg.outputPath,\n  gapSeconds: gap,\n  background: cfg.background,\n  width: cfg.width,\n  height: cfg.height,\n  segments: segments.map((s) => ({ idx: s.idx, wav: s.wav, duration: s.duration })),\n};\nfs.writeFileSync(cfg.planPath, JSON.stringify(plan, null, 2), 'utf8');\n\nif (skipped.length) {\n  console.log(`[shadowing] run ${cfg.runId}: skipped ${skipped.length} sentence(s):`,\n    JSON.stringify(skipped));\n}\n\nreturn [{\n  json: {\n    planPath: cfg.planPath,\n    srtPath: cfg.srtPath,\n    cueCount: cues.length,\n    skipped,\n    expectedDurationSec: Math.round(cursor * 100) / 100,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "n-assemble",
+      "name": "Assemble Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        0
+      ],
+      "parameters": {
+        "executeOnce": true,
+        "command": "=node /data/workflow/container/cli/build_video.js '{{ $json.planPath }}'"
+      }
+    },
+    {
+      "id": "n-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shapes the webhook response. Skipped sentences are surfaced rather than\n// swallowed: the video is still valid, but the caller should know it is short\n// a line and why.\nconst cfg = $('Prepare Run').first().json;\nconst srt = $('Build SRT').first().json;\n\nconst raw = $input.first().json.stdout;\nif (!raw) {\n  throw new Error(`video assembly produced no output: ${JSON.stringify($input.first().json).slice(0, 300)}`);\n}\nconst built = JSON.parse(raw);\n\nreturn [{\n  json: {\n    ok: true,\n    runId: cfg.runId,\n    topic: cfg.topic,\n    video: built.output,\n    subtitle: built.srt,\n    sentences: built.segments,\n    gapSeconds: cfg.gapSeconds,\n    voice: cfg.voice,\n    durationSec: built.durationSec,\n    sizeBytes: built.sizeBytes,\n    skippedSentences: srt.skipped,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "n-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1800,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Run": {
+      "main": [
+        [
+          {
+            "node": "Generate Dialogue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Dialogue": {
+      "main": [
+        [
+          {
+            "node": "Parse & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Normalize": {
+      "main": [
+        [
+          {
+            "node": "Synthesize Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthesize Speech": {
+      "main": [
+        [
+          {
+            "node": "Keep Successful Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Successful Audio": {
+      "main": [
+        [
+          {
+            "node": "Write Sentence Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Sentence Audio": {
+      "main": [
+        [
+          {
+            "node": "Probe Durations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Durations": {
+      "main": [
+        [
+          {
+            "node": "Build SRT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build SRT": {
+      "main": [
+        [
+          {
+            "node": "Assemble Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Video": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Ho_Chi_Minh"
+  }
+}

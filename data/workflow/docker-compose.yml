@@ -4,7 +4,7 @@ services:
   n8n:
     build:
       context: .
-      dockerfile: Dockerfile.n8n
+      dockerfile: infra/n8n.Dockerfile
     image: n8n-ffmpeg:2.36.9
     container_name: shadowing-n8n
     restart: unless-stopped
