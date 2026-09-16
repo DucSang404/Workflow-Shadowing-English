@@ -104,7 +104,11 @@ const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
   const declared = String(row.speaker ?? '').trim().toUpperCase();
   const speaker = VOICES[declared] ? declared : (i % 2 === 0 ? 'A' : 'B');
 
-  return { idx: i + 1, speaker, en, vi, ttsText: normalizeForTts(en) };
+  // Falls back to the topic so a sentence without a usable query still gets a
+  // scene rather than a hole in the video.
+  const imageQuery = String(row.imageQuery ?? '').trim().slice(0, 80) || cfg.topic;
+
+  return { idx: i + 1, speaker, en, vi, imageQuery, ttsText: normalizeForTts(en) };
 });
 
 fs.writeFileSync(

@@ -74,7 +74,66 @@ const audioFilter = gainDb
   ? `volume=${gainDb}dB,alimiter=limit=${limitLinear}:level=disabled`
   : '';
 
-// --- 3. one video encode per requested aspect ratio --------------------------
+// --- 3. scenes: one still per sentence, crossfaded -------------------------
+// Each scene is held for exactly as long as its cue - the sentence plus the
+// shadowing gap - so the picture always matches the line being repeated. The
+// timeline comes from the same segment durations the SRT was computed from, so
+// pictures and subtitles cannot drift apart.
+//
+// A sentence whose image could not be fetched reuses its neighbour's rather than
+// leaving a hole.
+const XFADE_SEC = 0.6;
+const FPS = 25;
+
+function sceneForEachSegment() {
+  const byIdx = new Map((plan.scenes ?? []).map((s) => [s.idx, s.file]));
+  const available = segs.map((s) => byIdx.get(s.idx)).filter(Boolean);
+  if (!available.length) return null;
+
+  let lastSeen = available[0];
+  return segs.map((seg) => {
+    const file = byIdx.get(seg.idx);
+    if (file) lastSeen = file;
+    return { file: lastSeen, hold: seg.duration + gapSeconds };
+  });
+}
+
+const sceneTimeline = sceneForEachSegment();
+
+/**
+ * Builds the inputs and filter chain for the scene slideshow.
+ *
+ * xfade consumes `XFADE_SEC` of overlap per transition, so each still is decoded
+ * for its hold plus one transition and the k-th transition is offset to the sum
+ * of every earlier hold. That puts each cut exactly on a cue boundary and makes
+ * the chain output one transition longer than the audio, which `-t` then trims.
+ */
+function sceneChain(width, height) {
+  const inputs = [];
+  const filters = [];
+
+  sceneTimeline.forEach(({ file, hold }, i) => {
+    inputs.push('-loop', '1', '-framerate', String(FPS), '-t', (hold + XFADE_SEC).toFixed(3), '-i', file);
+    filters.push(
+      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase`
+      + `,crop=${width}:${height},setsar=1,fps=${FPS},format=yuv420p[s${i}]`,
+    );
+  });
+
+  let label = '[s0]';
+  let offset = 0;
+  for (let i = 1; i < sceneTimeline.length; i += 1) {
+    offset += sceneTimeline[i - 1].hold;
+    const out = i === sceneTimeline.length - 1 ? '[scenes]' : `[x${i}]`;
+    filters.push(`${label}[s${i}]xfade=transition=fade:duration=${XFADE_SEC}:offset=${offset.toFixed(3)}${out}`);
+    label = out;
+  }
+  if (sceneTimeline.length === 1) filters.push('[s0]null[scenes]');
+
+  return { inputs, filters, label: '[scenes]' };
+}
+
+// --- 4. one video encode per requested aspect ratio --------------------------
 const escapedSrt = srtPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
 const hasBg = background && fs.existsSync(background);
 
@@ -113,16 +172,35 @@ function renderVideo({ width, height, path: outputPath }) {
     'Alignment=2', `MarginV=${toScriptUnits(marginPx)}`,
   ].join(',');
 
-  const vf = [
-    bgFilter,
-    `subtitles='${escapedSrt}':fontsdir=/usr/share/fonts:force_style='${style}'`,
-  ].join(',');
-
+  const subtitleFilter = `subtitles='${escapedSrt}':fontsdir=/usr/share/fonts:force_style='${style}'`;
   const af = audioFilter ? ['-af', audioFilter] : [];
-
-  ffmpeg([...bgInput, '-i', audioPath, '-vf', vf, ...af, '-t', String(durationSec),
+  const encode = [
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-shortest', outputPath]);
+    '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-shortest', outputPath,
+  ];
+
+  if (!sceneTimeline) {
+    ffmpeg([...bgInput, '-i', audioPath, '-vf', [bgFilter, subtitleFilter].join(','),
+      ...af, '-t', String(durationSec), ...encode]);
+  } else {
+    // A photograph behind white text is far busier than the flat background, so
+    // the picture is dimmed and a scrim laid under the subtitle band. The text
+    // already carries an outline; this is what keeps it readable over a bright
+    // sky or a white wall.
+    const scrimH = Math.round(marginPx + fontPx * 4);
+    const { inputs, filters } = sceneChain(width, height);
+    const audioIndex = sceneTimeline.length;
+
+    const graph = [
+      ...filters,
+      `[scenes]eq=brightness=-0.10:saturation=0.92`
+      + `,drawbox=x=0:y=${height - scrimH}:w=${width}:h=${scrimH}:color=black@0.38:t=fill`
+      + `,${subtitleFilter}[v]`,
+    ].join(';');
+
+    ffmpeg([...inputs, '-i', audioPath, '-filter_complex', graph,
+      '-map', '[v]', '-map', `${audioIndex}:a`, ...af, '-t', String(durationSec), ...encode]);
+  }
 
   return {
     key: portrait ? 'portrait' : 'landscape',

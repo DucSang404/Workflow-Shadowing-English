@@ -106,34 +106,31 @@ Không nhét `node_modules` vào hardened image cho việc này.
 
 ## Roadmap
 
-### A. Thêm cảnh (visual) vào video bằng AI
+### A. ~~Thêm cảnh (visual) vào video~~ ✅ ĐÃ LÀM (2026-09-16)
 
-Hiện nền là màu đơn `#14161A`. Muốn có hình minh hoạ theo nội dung.
+Mỗi câu một ảnh riêng, giữ đúng bằng khoảng `duration + gap` của câu đó, chuyển
+cảnh bằng `xfade` 0.6s. Ảnh được làm tối nhẹ và có scrim dưới chân để phụ đề
+luôn đọc được trên nền ảnh sáng.
 
-**Vấn đề cần giải trước**: image gen miễn phí thật sự thì hiếm. Groq **không có**
-image model. Các hướng khả thi:
+**Nguồn ảnh — hai tầng**, ở `container/cli/fetch_scenes.js`:
 
-| Hướng | Chi phí | Ghi chú |
+| Tầng | Cần key | Ghi chú |
 |---|---|---|
-| Pollinations.ai (`image.pollinations.ai/prompt/...`) | $0, không cần key | Chất lượng khá, rate limit không công bố, có thể die bất kỳ lúc nào |
-| Stable Diffusion self-host (ComfyUI / A1111) | $0 nhưng tốn máy | Mac M-series chạy SDXL ~20-40s/ảnh. Nặng, cần thêm container |
-| Ảnh stock (Pexels / Unsplash API) | $0, có free tier key | Không phải AI nhưng **nhanh và ổn định nhất**, ảnh thật đẹp hơn SD free |
-| Gemini / Imagen free tier | cần xác nhận hạn mức | Phải hỏi bạn trước vì có thể phát sinh phí |
+| Pexels | có (free) | Ảnh stock chuyên nghiệp. Node `Search Pexels` giữ credential, ghi URL ra `pexels.json`; script CLI **không bao giờ thấy key**. |
+| Openverse | không | Ảnh Creative Commons. Lọc `cc0,pdm` trước rồi mới `by`; **loại hẳn `by-sa`** vì điều khoản share-alike sẽ lan sang cả video upload. |
 
-**Đề xuất**: bắt đầu bằng **Pexels API** (1 ảnh/câu theo keyword Groq sinh kèm),
-vì nó ổn định và cho kết quả nhìn chuyên nghiệp ngay. Thêm Pollinations như
-fallback. SD self-host để sau nếu bạn muốn style nhất quán.
+Groq sinh thêm `imageQuery` cho từng câu (danh từ cụ thể, chụp ảnh được).
+Chất lượng phụ thuộc rất nhiều vào query này: với `"cafe counter coffee croissant"`
+Openverse cho ảnh đúng, còn khi rơi về topic chung chung thì ra ảnh tư liệu lạc đề.
 
-**Việc phải làm**:
-- Groq trả thêm `imagePrompt` hoặc `keywords` cho mỗi câu
-- Node HTTP tải ảnh → `work/<runId>/scene_NNN.jpg`
-- `container/cli/build_video.js`: đổi từ 1 nền tĩnh sang **concat các đoạn ảnh theo đúng
-  cue timing** (mỗi ảnh hiện đúng khoảng `duration + gap` của câu đó)
-- Thêm crossfade giữa các cảnh (`xfade` filter) để không bị giật
-- Ken Burns effect (`zoompan`) nếu muốn ảnh tĩnh đỡ chán
+**Đo thực tế** (6 câu, chủ đề gọi đồ ăn sáng): 6/6 ảnh, toàn `cc0` nên không phải
+ghi nguồn; 5 ảnh rất khớp, 1 tạm được. Thêm ~20s vào thời gian dựng.
 
-**Rủi ro**: ffmpeg filter graph sẽ phức tạp hơn nhiều so với hiện tại. Nên tách
-thành script riêng `build_video_scenes.js` thay vì nhồi vào file cũ.
+**Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.
+Thêm key vào credential `Pexels API` là ảnh đẹp hơn ngay, không phải sửa code.
+
+**Đã thử và loại**: Pollinations (AI gen, keyless) — ảnh mờ, sai chủ đề và **có
+watermark** dù đã `nologo=true`.
 
 ---
 

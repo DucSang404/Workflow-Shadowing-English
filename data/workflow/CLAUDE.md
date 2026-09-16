@@ -68,13 +68,15 @@ data/workflow/
 ├── container/                ← chạy trong container n8n
 │   ├── cli/                  ← gọi bởi Execute Command node
 │   │   ├── probe_durations.js
+│   │   ├── fetch_scenes.js
 │   │   └── build_video.js
 │   └── nodes/                ← nội dung Code node, nhóm theo workflow
 │       └── shadowing/
 │           ├── 01_prepare_run.js
 │           ├── 02_parse_normalize.js
 │           ├── 03_build_srt.js
-│           └── 04_build_response.js
+│           ├── 04_build_response.js
+│           └── 05_collect_pexels.js
 │
 ├── build/                    ← SINH RA bởi deploy.js, không sửa tay
 │   ├── shadowing.json
@@ -227,6 +229,21 @@ video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạ
    Muốn animate thì chia thành nhiều box width tĩnh + `enable='between(t,...)'`.
 3. **Trong nháy đơn của ffmpeg, đừng escape dấu phẩy bằng `\\,`.** Nháy đơn đã bỏ
    ý nghĩa phân tách rồi; thêm backslash làm expression fail lặng lẽ.
+
+### Gọi API ảnh bên ngoài
+
+Rút ra khi làm `fetch_scenes.js`, cả ba đều làm mất ảnh một cách im lặng:
+
+- **Luôn gửi `User-Agent` có thật.** Wikimedia và Flickr trả **HTTP 429** cho
+  client không khai báo. `fetch()` trần làm hỏng 4/6 ảnh trước khi phát hiện ra.
+- **Tìm kiếm trả về *danh sách ứng viên*, không phải câu trả lời.** Openverse gom
+  nhiều provider; có provider chặn, có provider phục vụ bình thường. Lấy mỗi kết
+  quả đầu là hỏng. Phải thử lần lượt tới khi tải + decode được.
+- **Rút gọn query thì bỏ chữ ở ĐẦU, không bỏ ở cuối.** Tiếng Anh đặt danh từ
+  chính ở cuối: `"printed hotel invoice"` → `"hotel invoice"` → `"invoice"`.
+  Cắt ngược lại ra `"printed hotel"` và trả về tranh khắc Hôtel des Invalides.
+- **HTTP 200 không chứng minh đó là ảnh.** Trang lỗi cũng tải về ngon lành.
+  Luôn để `ffmpeg`/`ffprobe` decode lại rồi mới tin.
 
 **Index của câu sau node TTS.** HTTP Request node thay `json` bằng binary response,
 nên `$json.idx` biến mất. `Write Sentence Audio` lấy lại qua paired item:

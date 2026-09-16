@@ -58,6 +58,7 @@ return [{
     manifestPath: `${workDir}/manifest.json`,
     srtPath: `${workDir}/subtitle.srt`,
     planPath: `${workDir}/plan.json`,
+    pexelsPath: `${workDir}/pexels.json`,
     outputPath: outputs[0].path,
     outputs,
     outputDir: `${ROOT}/output`,

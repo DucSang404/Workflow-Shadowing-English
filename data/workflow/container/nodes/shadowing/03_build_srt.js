@@ -50,12 +50,28 @@ const srt = cues
 
 fs.writeFileSync(cfg.srtPath, srt, 'utf8');
 
+// Scenes are optional: the Fetch Scenes node exits 0 with an empty list when no
+// image could be found, and build_video.js falls back to the flat background.
+let scenes = [];
+let scenesMissing = [];
+try {
+  const raw = $('Fetch Scenes').first().json.stdout;
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    scenes = parsed.scenes ?? [];
+    scenesMissing = parsed.missing ?? [];
+  }
+} catch (err) {
+  console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
+}
+
 const plan = {
   runId: cfg.runId,
   workDir: cfg.workDir,
   srtPath: cfg.srtPath,
   outputs: cfg.outputs,
   gapSeconds: gap,
+  scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
   targetLufs: cfg.targetLufs,
   background: cfg.background,
   segments: segments.map((s) => ({ idx: s.idx, wav: s.wav, duration: s.duration })),
@@ -73,6 +89,8 @@ return [{
     srtPath: cfg.srtPath,
     cueCount: cues.length,
     skipped,
+    scenes,
+    scenesMissing,
     expectedDurationSec: Math.round(cursor * 100) / 100,
   },
 }];

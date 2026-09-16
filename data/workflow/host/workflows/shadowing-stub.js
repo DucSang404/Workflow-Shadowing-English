@@ -12,12 +12,12 @@ const { definition: real } = require('./shadowing');
 
 const CANNED = {
   sentences: [
-    { speaker: 'A', en: 'Hi there, could I get a large iced latte, please?', vi: 'Chào bạn, cho tôi một ly latte đá lớn nhé?' },
-    { speaker: 'B', en: 'Sure thing. Would you like any syrup with that?', vi: 'Được thôi. Bạn có muốn thêm siro không?' },
-    { speaker: 'A', en: 'Just a little vanilla, and can you make it less sweet?', vi: 'Một chút vani thôi, và làm ít ngọt giúp tôi được không?' },
-    { speaker: 'B', en: 'No problem. That comes to $5.75 altogether.', vi: 'Không vấn đề gì. Tổng cộng là 5,75 đô la.' },
-    { speaker: 'A', en: 'Here you go. Do you take cards, or is it cash only?', vi: 'Của bạn đây. Bạn nhận thẻ hay chỉ tiền mặt?' },
-    { speaker: 'B', en: 'Cards are fine. Your drink will be ready in 3 minutes.', vi: 'Thẻ cũng được. Đồ uống của bạn sẽ xong sau 3 phút.' },
+    { speaker: 'A', en: 'Hi there, could I get a large iced latte, please?', vi: 'Chào bạn, cho tôi một ly latte đá lớn nhé?', imageQuery: 'iced latte cup' },
+    { speaker: 'B', en: 'Sure thing. Would you like any syrup with that?', vi: 'Được thôi. Bạn có muốn thêm siro không?', imageQuery: 'coffee syrup bottles' },
+    { speaker: 'A', en: 'Just a little vanilla, and can you make it less sweet?', vi: 'Một chút vani thôi, và làm ít ngọt giúp tôi được không?', imageQuery: 'vanilla beans' },
+    { speaker: 'B', en: 'No problem. That comes to $5.75 altogether.', vi: 'Không vấn đề gì. Tổng cộng là 5,75 đô la.', imageQuery: 'cafe cash register' },
+    { speaker: 'A', en: 'Here you go. Do you take cards, or is it cash only?', vi: 'Của bạn đây. Bạn nhận thẻ hay chỉ tiền mặt?', imageQuery: 'credit card payment terminal' },
+    { speaker: 'B', en: 'Cards are fine. Your drink will be ready in 3 minutes.', vi: 'Thẻ cũng được. Đồ uống của bạn sẽ xong sau 3 phút.', imageQuery: 'barista espresso machine' },
   ],
 };
 

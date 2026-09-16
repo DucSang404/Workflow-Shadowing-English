@@ -38,6 +38,7 @@ try {
     orientation: cfg.orientation,
     sentences: manifest.sentences,
     segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),
+    scenes: srt.scenes,
     outputs: built.outputs,
     durationSec: built.durationSec,
     loudness: built.loudness,
@@ -70,6 +71,12 @@ return [{
     sizeBytes: built.sizeBytes,
     loudness: built.loudness,
     skippedSentences: srt.skipped,
+    scenes: {
+      used: (srt.scenes ?? []).length,
+      missing: srt.scenesMissing ?? [],
+      // Only CC BY images oblige a credit line; cc0 and Pexels do not.
+      attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),
+    },
     workDirCleaned: cleaned,
   },
 }];

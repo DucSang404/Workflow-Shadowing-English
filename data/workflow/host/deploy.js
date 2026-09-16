@@ -31,10 +31,11 @@ const REGISTRY = {
     throw new Error(`unknown workflow: ${unknown.join(', ')}. Known: ${Object.keys(REGISTRY).join(', ')}`);
   }
 
-  const env = requireEnv(loadEnv(), 'CRED_GROQ_ID', 'CRED_EDGETTS_ID');
+  const env = requireEnv(loadEnv(), 'CRED_GROQ_ID', 'CRED_EDGETTS_ID', 'CRED_PEXELS_ID');
   const credentials = {
     groq: { id: env.CRED_GROQ_ID, name: 'Groq API' },
     edgeTts: { id: env.CRED_EDGETTS_ID, name: 'EdgeTTS Header Auth' },
+    pexels: { id: env.CRED_PEXELS_ID, name: 'Pexels API' },
   };
 
   const n8n = client();
