@@ -51,13 +51,13 @@ const srt = cues
 fs.writeFileSync(cfg.srtPath, srt, 'utf8');
 
 const plan = {
+  runId: cfg.runId,
   workDir: cfg.workDir,
   srtPath: cfg.srtPath,
-  outputPath: cfg.outputPath,
+  outputs: cfg.outputs,
   gapSeconds: gap,
+  targetLufs: cfg.targetLufs,
   background: cfg.background,
-  width: cfg.width,
-  height: cfg.height,
   segments: segments.map((s) => ({ idx: s.idx, wav: s.wav, duration: s.duration })),
 };
 fs.writeFileSync(cfg.planPath, JSON.stringify(plan, null, 2), 'utf8');

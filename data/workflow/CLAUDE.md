@@ -57,6 +57,7 @@ data/workflow/
 ├── host/                     ← chạy trên máy bạn
 │   ├── deploy.js             ← điểm vào duy nhất để deploy
 │   ├── inspect-execution.js  ← debug một lần chạy
+│   ├── verify-sync.js        ← regression test cho drift phụ đề
 │   ├── lib/
 │   │   ├── config.js         ← đọc .env
 │   │   └── n8n.js            ← REST client + upsertWorkflow
@@ -144,6 +145,9 @@ node host/deploy.js --no-activate   # push nhưng không activate
 node host/inspect-execution.js      # xem lần chạy gần nhất, từng node
 node host/inspect-execution.js 12   # một execution cụ thể
 
+node host/verify-sync.js            # audit drift phụ đề của run mới nhất
+node host/verify-sync.js <runId>    # exit code != 0 nếu lệch — dùng được làm cổng kiểm tra
+
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
   -H 'Content-Type: application/json' -d '{"topic":"smoke test"}'
@@ -168,6 +172,18 @@ curl -X POST http://localhost:5678/webhook/shadowing \
   theo từng bản n8n.
 - Đừng in khoá ra log. Khi cần kiểm tra thì in độ dài và 4 ký tự đầu.
 
+**Đổi tài khoản owner n8n** (email/password đăng nhập UI):
+
+```bash
+docker exec shadowing-n8n n8n user-management:reset   # xoá user, GIỮ workflow + credential
+docker compose restart n8n
+# rồi POST /rest/owner/setup với N8N_OWNER_EMAIL / N8N_OWNER_PASSWORD mới trong .env
+```
+
+`user-management:reset` gán lại toàn bộ workflow và credential cho owner mới, nên
+Groq key không mất. Dù vậy **hãy backup `n8n_data/` trước** — key nhà cung cấp chỉ
+tồn tại ở đó, không có bản sao nào khác. API key cũ vẫn dùng được vì user id không đổi.
+
 ---
 
 ## Bốn env var không được xoá
@@ -183,16 +199,34 @@ curl -X POST http://localhost:5678/webhook/shadowing \
 
 ---
 
-## Hai điều dễ sập nhất
+## Những chỗ dễ sập nhất
 
 **Timing phụ đề.** `container/nodes/shadowing/03_build_srt.js` và
 `container/cli/build_video.js` **phải đồng ý về cùng một phép tính**: câu thứ `i`
 bắt đầu tại tổng của mọi `(duration + gap)` trước nó. Sửa một bên mà quên bên kia
-thì phụ đề lệch dần và không ai nhận ra cho tới khi xem hết video. Hiện drift đo
-được là **0.0 ms** — có regression test ở `docs.md`.
+thì phụ đề lệch dần và không ai nhận ra cho tới khi xem hết video. Hiện drift đo được là **0.0 ms**.
+
+**Chạy `node host/verify-sync.js` sau mọi thay đổi động tới audio hoặc timeline.** Nó
+đối chiếu SRT với phép tính, rồi đối chiếu tiếp với **file mp4 thật** bằng
+`silencedetect` — vì một độ trễ đều toàn bộ track vẫn thoả mãn phép tính mà vẫn sai
+trên màn hình. Đây cũng là lý do **không dùng filter `loudnorm`**: nó có thể đổi số
+sample. Dùng `volume` + `alimiter` (đã kiểm chứng giữ nguyên độ dài PCM).
 
 Đây cũng là lý do `probe_durations.js` chuyển mp3 sang WAV rồi mới đo: mp3 mang
 padding của encoder, lệch vài ms mỗi file, cộng dồn 8 câu là thấy rõ.
+
+**Ba cái bẫy của ffmpeg đã cắn một lần.** Cả ba đều **không báo lỗi**, chỉ cho ra
+video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạy:
+
+1. **`force_style` dùng *script unit* của ASS, không phải pixel.** SRT chuyển sang ASS
+   có `PlayResY=288`, libass nhân mọi thứ với `frameHeight/288`. Đưa thẳng pixel vào
+   thì đúng *tình cờ* ở 720p và đẩy chữ ra ngoài khung ở 1920 — ra video **trắng trơn**.
+   `original_size` **không** sửa được. `Outline`/`Shadow` cũng là script unit.
+2. **`drawbox` chỉ evaluate `w`/`h`/`x`/`y` một lần lúc config, không phải mỗi frame.**
+   Expression có `t` sẽ ra 0 tại t=0, mà drawbox hiểu `w=0` là "kéo tới mép khung".
+   Muốn animate thì chia thành nhiều box width tĩnh + `enable='between(t,...)'`.
+3. **Trong nháy đơn của ffmpeg, đừng escape dấu phẩy bằng `\\,`.** Nháy đơn đã bỏ
+   ý nghĩa phân tách rồi; thêm backslash làm expression fail lặng lẽ.
 
 **Index của câu sau node TTS.** HTTP Request node thay `json` bằng binary response,
 nên `$json.idx` biến mất. `Write Sentence Audio` lấy lại qua paired item:

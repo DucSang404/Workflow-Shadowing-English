@@ -22,10 +22,12 @@ const nodeCode = (file) =>
 const SYSTEM_PROMPT = [
   'You write short, natural English conversations for listening-and-shadowing practice.',
   'Return ONLY a JSON object of this shape:',
-  '{"sentences":[{"en":"<one English line>","vi":"<natural Vietnamese translation>"}]}',
+  '{"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>"}]}',
   'Rules:',
   '- Everyday spoken register, the kind of thing people actually say. No textbook stiffness.',
   '- The lines must form ONE coherent two-person exchange on the given topic, in order.',
+  '- `speaker` is "A" or "B" and must alternate as the turns alternate, starting at "A".',
+  '  A is the person with the need (customer, traveller, caller); B is the other side.',
   '- 8 to 16 words per line, so a learner can repeat each one in a single breath.',
   '- Plain words only: no emoji, no markdown, no bracketed speaker labels.',
   '- The Vietnamese must read like natural Vietnamese, not a word-for-word gloss.',

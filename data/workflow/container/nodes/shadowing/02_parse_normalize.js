@@ -91,11 +91,20 @@ if (rows.length < 5) {
   throw new Error(`expected at least 5 sentences, got ${rows.length}`);
 }
 
+// Two speakers get two voices. The model is asked to alternate A/B, but a model
+// that forgets the field would silently collapse the dialogue back to one voice,
+// so an absent or unexpected value falls back to alternating by position.
+const VOICES = { A: cfg.voiceA, B: cfg.voiceB };
+
 const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
   const en = String(row.en ?? row.english ?? '').trim();
   const vi = String(row.vi ?? row.vietnamese ?? '').trim();
   if (!en) throw new Error(`sentence ${i + 1} has no English text`);
-  return { idx: i + 1, en, vi, ttsText: normalizeForTts(en) };
+
+  const declared = String(row.speaker ?? '').trim().toUpperCase();
+  const speaker = VOICES[declared] ? declared : (i % 2 === 0 ? 'A' : 'B');
+
+  return { idx: i + 1, speaker, en, vi, ttsText: normalizeForTts(en) };
 });
 
 fs.writeFileSync(
@@ -104,4 +113,4 @@ fs.writeFileSync(
   'utf8',
 );
 
-return sentences.map((s) => ({ json: { ...s, voice: cfg.voice, speed: cfg.speed } }));
+return sentences.map((s) => ({ json: { ...s, voice: VOICES[s.speaker], speed: cfg.speed } }));

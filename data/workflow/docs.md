@@ -11,11 +11,14 @@ Cập nhật: 2026-09-16
 
 | Hạng mục | Kết quả đo được |
 |---|---|
-| E2E 8 câu, topic "ordering coffee" | 12/12 node success, 9.8s wall-clock |
-| Đồng bộ phụ đề | drift **0.0 ms** trên cả 8 cue |
-| Video | 1280×720 h264+aac, 50.07s, 571 KB |
-| Normalize TTS | `$4.75` → đọc "four dollars seventy-five cents", subtitle giữ `$4.75` |
+| E2E 6 câu, "asking a stranger for directions" | 12/12 node success, 14.5s wall-clock, xuất cả 2 tỉ lệ |
+| Đồng bộ phụ đề | drift **0.0 ms**; đối chiếu mp4 thật qua `silencedetect`: lệch 220 ms (độ trễ ngưỡng năng lượng, không phải drift) |
+| Video | 1280×720 **và** 1080×1920, h264+aac, 41.54s — hai file trùng độ dài tới ms |
+| Âm lượng | **-15.0 LUFS**, peak -1.3 dBFS (trước khi làm: -23.6 LUFS) |
+| Hai giọng | A/B luân phiên; dải 80-165 Hz chênh **~10 dB** giữa hai speaker |
+| Normalize TTS | `$4.75` → "four dollars seventy-five cents"; `#12` → "twelve"; subtitle giữ nguyên |
 | Skip câu lỗi | 3/8 câu hỏng → video 29.35s từ 5 câu, SRT đánh số lại, không fail |
+| Dọn rác | `work/<runId>` xoá sạch; `output/` giữ `.mp4` + `.srt` + `.json` |
 
 ---
 
@@ -44,34 +47,32 @@ Node Groq đang set 5 lần × 5s = chịu được cửa sổ 429 khoảng 25s.
 expression `{{ 2 ** $runIndex }}` giây → nối ngược về node Groq. n8n cho phép
 cycle. Đánh đổi: graph khó đọc hơn.
 
-### 3. Một giọng cho cả hai người nói
-Hội thoại do Groq sinh là trao đổi **2 người** (khách / barista), nhưng cả 8 câu
-đều dùng `en-US-AvaNeural`. Nghe như một người tự nói chuyện một mình.
+### 3. ~~Một giọng cho cả hai người nói~~ ✅ ĐÃ LÀM
+Groq trả thêm `speaker: "A"|"B"`, map sang `voiceA`/`voiceB` trong
+`container/nodes/shadowing/02_parse_normalize.js` (mặc định `en-US-AvaNeural` /
+`en-US-AndrewNeural`). Model quên field thì fallback luân phiên theo vị trí.
 
-Đây là hạn chế ảnh hưởng chất lượng học nhiều nhất trong danh sách này.
+Đã đo trên run thật: câu của A có năng lượng dải 80-165 Hz **thấp hơn ~10 dB** so
+với câu của B — hai giọng tách bạch rõ, không phải chỉ đổi tham số trên giấy.
 
-**Cách sửa**: cho Groq trả thêm field `speaker: "A"|"B"`, rồi map sang 2 voice
-(vd `en-US-AvaNeural` / `en-US-AndrewNeural`) trong `container/nodes/shadowing/02_parse_normalize.js`.
-Thay đổi nhỏ, tác động lớn.
+Truyền `voice` (số ít) vẫn được: cả hai speaker dùng chung giọng đó.
 
-### 4. Audio hơi nhỏ
-Mean volume **-23.6 dB**, max -3.1 dB. Chuẩn phát mobile/TikTok khoảng -14 LUFS.
-Nghe trên điện thoại ngoài đường sẽ phải vặn to.
+### 4. ~~Audio hơi nhỏ~~ ✅ ĐÃ LÀM
+Đo `ebur128` rồi áp gain tĩnh + `alimiter` ở -1.5 dBTP. Kết quả thực đo trên file
+xuất ra: **-15.0 LUFS** (trước: -23.6), peak -1.3 dBFS.
 
-**Cách sửa**: thêm `loudnorm=I=-14:TP=-1.5:LRA=11` vào filter audio trong
-`container/cli/build_video.js`. Một dòng.
+**Không** dùng filter `loudnorm`: nó có thể đổi số sample và làm trôi phụ đề.
+`alimiter` đã kiểm chứng giữ nguyên độ dài PCM từng byte.
 
 ### 5. Tham số `background` chưa từng được test qua workflow
 Code có nhận `background` (đường dẫn ảnh) và `container/cli/build_video.js` có nhánh xử lý
 scale/crop, nhưng **chưa chạy thử lần nào** — mọi lần test đều dùng nền màu đơn.
 Nhánh ảnh có thể có bug chưa lộ.
 
-### 6. Không dọn thư mục `work/`
-Mỗi run 8 câu để lại **~4 MB** (mp3 + wav + full_audio.wav). Không có cơ chế xoá.
-Chạy 100 video là 400 MB rác.
-
-**Cách sửa**: thêm bước xoá `work/<runId>` sau khi mp4 xong, hoặc cron dọn
-thư mục cũ hơn N ngày. Cân nhắc giữ lại `manifest.json` + `subtitle.srt` (nhẹ).
+### 6. ~~Không dọn thư mục `work/`~~ ✅ ĐÃ LÀM
+`04_build_response.js` ghi `output/<runId>.srt` + `output/<runId>.json` (run record:
+câu, speaker, duration, gap, loudness) rồi xoá cả `work/<runId>`. Truyền
+`keepWorkDir: true` để giữ lại khi debug.
 
 ### 7. Webhook không có xác thực
 Bất kỳ ai truy cập được `localhost:5678` đều POST được. Hiện chỉ bind localhost
@@ -84,10 +85,13 @@ disable mặc định**. Nghĩa là workflow nào trong instance này cũng ch�
 shell tùy ý. Chấp nhận được với instance local dùng riêng; **không** nên giữ nếu
 sau này có người khác dùng chung n8n này.
 
-### 9. Không đăng nhập được UI n8n
-Password owner lưu trong `.env` không khớp với password thật trong DB (login trả
-401). Không cản trở gì vì mọi thao tác đều qua REST API, nhưng muốn mở
-`http://localhost:5678` bằng trình duyệt thì phải reset password trước.
+### 9. ~~Không đăng nhập được UI n8n~~ ✅ ĐÃ SỬA
+Chạy `n8n user-management:reset` rồi setup lại owner bằng `N8N_OWNER_EMAIL` /
+`N8N_OWNER_PASSWORD` trong `.env`. Đăng nhập `http://localhost:5678` đã được.
+
+Lệnh reset **không** đụng tới workflow và credential (`makeOwnerOfAllWorkflows` /
+`makeOwnerOfAllCredentials` gán lại chúng cho owner mới), nên Groq key vẫn nguyên
+— đã kiểm chứng bằng một run thật sau khi reset.
 
 ### 10. Free tier Groq: ~1 video/phút
 Giới hạn OTPM = 1000 output token/phút. Một request tốn ~260 token, nhưng nếu
@@ -202,18 +206,20 @@ cách này **làm xong trong 15 phút**.
 
 Xếp theo tỉ lệ **giá trị / công sức**, cao xuống thấp.
 
-### Đáng làm ngay (mỗi cái dưới 1 giờ)
+### ~~Đáng làm ngay~~ ✅ ĐÃ LÀM HẾT (2026-09-16)
 
-1. **Hai giọng cho hai người nói** — xem hạn chế #3. Cải thiện chất lượng học nhiều
-   nhất so với công bỏ ra.
-2. **Chuẩn hoá âm lượng** (`loudnorm`) — xem hạn chế #4. Một dòng ffmpeg.
-3. **Xuất bản dọc 9:16** — bắt buộc cho TikTok/Shorts/Reels. Đổi `width`/`height`
-   thành tham số và đặt subtitle `MarginV` cao hơn. Có thể xuất **cả hai tỉ lệ**
-   trong một lần dựng.
-4. **Dọn `work/` sau khi xong** — xem hạn chế #6.
-5. **Đếm ngược trong khoảng lặng** — hiện khoảng lặng hoàn toàn trống, người học
-   không biết còn bao lâu. Vẽ 3 chấm mờ dần hoặc thanh progress bằng `drawbox`.
-   Rất hợp với mục đích shadowing.
+1. ✅ **Hai giọng cho hai người nói** — xem hạn chế #3.
+2. ✅ **Chuẩn hoá âm lượng** — xem hạn chế #4.
+3. ✅ **Xuất bản dọc 9:16** — param `orientation`: `landscape` | `portrait` | `both`.
+   Portrait 1080×1920. Audio dựng 1 lần, encode 2 lần. Tên file phụ có hậu tố
+   `_portrait`; file đầu giữ tên `<runId>.mp4` để không phá hợp đồng cũ.
+4. ✅ **Dọn `work/`** — xem hạn chế #6.
+5. ❌ **Đếm ngược trong khoảng lặng** — đã làm xong rồi **gỡ bỏ** theo yêu cầu:
+   nhìn thực tế thấy không hợp. Khoảng lặng giờ hoàn toàn trống như cũ.
+
+Kèm theo: **`host/verify-sync.js`** — biến kiểm tra drift thành tool chạy được,
+đối chiếu SRT với phép tính *và* với file mp4 thật (`silencedetect`). Exit code
+khác 0 khi lệch, dùng được làm cổng kiểm tra.
 
 ### Đáng làm sau
 
