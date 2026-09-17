@@ -102,6 +102,43 @@ Spec có nhắc `ms` để convert duration. Image n8n hardened không có (`MOD
 và cũng không cần — silence gap là số giây thuần, đưa thẳng vào `apad=pad_dur=`.
 Không nhét `node_modules` vào hardened image cho việc này.
 
+### 12. Thuật ngữ kỹ thuật bị dịch nghĩa đen sang tiếng Việt
+
+Groq dịch sát nghĩa từng chữ với các thuật ngữ mà người Việt vẫn nói nguyên tiếng
+Anh. Đo được trên video chủ đề standup (`20260916162109_irmz84`, câu 8):
+
+| tiếng Anh | Groq dịch | đúng ra phải là |
+|---|---|---|
+| `just the usual stand-up` | "chỉ là buổi **đứng lên** thường lệ" | "chỉ là buổi **họp standup** thường lệ" |
+
+Cùng nhóm rủi ro: sprint, deploy, merge, commit, bug, release, branch, review.
+Lỗi này chỉ ảnh hưởng **phụ đề tiếng Việt** — phần đọc tiếng Anh vẫn đúng.
+
+**Cách sửa**: thêm một dòng vào `SYSTEM_PROMPT` ở `host/workflows/shadowing.js`,
+yêu cầu giữ nguyên thuật ngữ kỹ thuật/ngành nghề thay vì dịch. Sửa xong phải chạy
+lại `node host/deploy.js`. Ước lượng: 5 phút, nhưng cần vài run để kiểm chứng.
+
+### 13. Chất lượng ảnh sụt mạnh tuỳ chủ đề (khi chỉ có Openverse)
+
+Kho CC0 của Openverse lệch nặng về lưu trữ chính phủ, ảnh scan bảo tàng và dữ
+liệu khoa học. Nó **không** phải kho ảnh stock đời thường. Hệ quả đo được:
+
+| Chủ đề | Ảnh đúng | Ghi chú |
+|---|---|---|
+| gọi đồ ăn sáng ở quán | **6/6** | kho CC0 nhiều ảnh đồ ăn |
+| mua vé tàu | 4/6 | |
+| standup với team dev | **2/8** | "team meeting morning" ra hai chính trị gia; "front end coding" ra bản đồ phao biển; "team waving goodbye" ra cầu thủ bóng đá |
+
+Chủ đề **văn phòng / IT / công nghệ hiện đại** là tệ nhất — gần như không có ảnh
+phù hợp trong kho CC0.
+
+**Cách sửa**: nạp key vào credential `Pexels API` (id `WDuL96mPAxBXPRp7`).
+Kho Pexels đầy ảnh lập trình viên, họp nhóm, văn phòng. **Không phải sửa code** —
+nhánh Pexels đã lắp sẵn và đã test đường degrade. Lấy key free tại pexels.com/api.
+
+**Nếu vẫn muốn $0 tuyệt đối**: cân nhắc Stable Diffusion self-host (xem lại bảng
+so sánh ở mục A) — đổi lấy ~4GB model và 20-40s mỗi ảnh.
+
 ---
 
 ## Roadmap
@@ -128,6 +165,7 @@ ghi nguồn; 5 ảnh rất khớp, 1 tạm được. Thêm ~20s vào thời gian
 
 **Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.
 Thêm key vào credential `Pexels API` là ảnh đẹp hơn ngay, không phải sửa code.
+Mức độ ảnh hưởng thay đổi rất mạnh theo chủ đề — xem hạn chế **#13**.
 
 **Đã thử và loại**: Pollinations (AI gen, keyless) — ảnh mờ, sai chủ đề và **có
 watermark** dù đã `nologo=true`.
