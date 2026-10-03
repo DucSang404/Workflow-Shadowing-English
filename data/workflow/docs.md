@@ -1,6 +1,6 @@
 # AI Shadowing Video Generator — trạng thái & roadmap
 
-Cập nhật: 2026-09-16
+Cập nhật: 2026-09-17
 
 - **Workflow chính**: `JwSXDLLsNxY3e9CV` — active, `POST http://localhost:5678/webhook/shadowing`
 - **Workflow stub**: `jyx9sYJhVo74D48Q` — active, `/webhook/shadowing-stub`, thay node Groq bằng hội thoại canned (test pipeline không tốn quota)
@@ -18,7 +18,9 @@ Cập nhật: 2026-09-16
 | Hai giọng | A/B luân phiên; dải 80-165 Hz chênh **~10 dB** giữa hai speaker |
 | Normalize TTS | `$4.75` → "four dollars seventy-five cents"; `#12` → "twelve"; subtitle giữ nguyên |
 | Skip câu lỗi | 3/8 câu hỏng → video 29.35s từ 5 câu, SRT đánh số lại, không fail |
-| Dọn rác | `work/<runId>` xoá sạch; `output/` giữ `.mp4` + `.srt` + `.json` |
+| Nhạc nền | bed CC0 ở **-24 LUFS dưới giọng**; cùng một bed, khoảng lặng -38.5 dB (ở -30 là -44.5), giọng vẫn -14.8 dB |
+| Thumbnail | 1 cover `.jpg` cho mỗi tỉ lệ, phụ đề burn-in bị xoá sạch, tiêu đề tiếng Việt đủ dấu |
+| Dọn rác | `work/<runId>` xoá sạch; `output/` giữ `.mp4` + `.srt` + `.json` + `_cover.jpg` |
 
 ---
 
@@ -256,6 +258,51 @@ Kèm theo: **`host/verify-sync.js`** — biến kiểm tra drift thành tool ch�
 đối chiếu SRT với phép tính *và* với file mp4 thật (`silencedetect`). Exit code
 khác 0 khi lệch, dùng được làm cổng kiểm tra.
 
+### ~~Đợt 2~~ ✅ ĐÃ LÀM (2026-09-17)
+
+Số thứ tự giữ nguyên theo danh sách *Ý tưởng bổ sung* gốc ở dưới.
+
+8. ✅ **Nhạc nền nhẹ** — `container/cli/fetch_music.js` + nhánh mix trong
+   `container/cli/build_video.js`. Hai tầng nguồn giống hệt ảnh: file trong
+   `assets/music/` được ưu tiên, không có thì tìm nhạc **CC0** trên Openverse
+   (keyless). Mức bed đặt theo **programme loudness**, không phải peak: đo cả bed
+   lẫn giọng bằng `ebur128` rồi đặt gain để bed nằm đúng `musicDb` (mặc định
+   **-24**) dưới giọng, nên file nhạc to nhỏ thế nào cũng ra cùng một kết quả.
+   Mặc định ban đầu đặt -30; đo thì đúng nhưng nghe trên loa điện thoại gần như
+   mất hẳn, nên nâng lên -24 (2026-10-03). Đổi mức chỉ dịch bed, **không** chạm
+   vào giọng: A/B trên cùng một bed cho khoảng lặng -44.5 → -38.5 dB trong khi
+   đoạn có giọng giữ nguyên -14.8 dB.
+   Bed ngắn thì loop, dài thì cắt, luôn fade 2s vào / 2.5s ra.
+
+   **Chỗ nguy hiểm đã chặn**: mix mà đổi độ dài audio thì *toàn bộ* phụ đề trôi.
+   Nên `amix` dùng `duration=first:normalize=0`, rồi **so số sample** của bản mix
+   với bản giọng; lệch một sample là vứt bản mix, xuất audio không nhạc. Số sample
+   được ghi vào run record và `host/verify-sync.js` kiểm lại (`voice=890496
+   final=890496`). `normalize=0` là bắt buộc — mặc định `amix` chia đều theo số
+   input, tức là **hạ giọng 6 dB** để nhường chỗ cho bed thấp hơn nó 30 dB.
+
+   **Cache**: tải một bed mất ~35s, pipeline chỉ có ~15s. Nên bản tải về nằm ở
+   `assets/music/.openverse/` (gitignored) và được dùng lại; 3 run đầu tải, từ run
+   thứ 4 chọn ngẫu nhiên trong kho mất **0.1s**.
+
+   **Chỉ nhận `cc0,pdm`, loại hẳn `by`** — ảnh CC BY chỉ cần dòng credit trong
+   file JSON, nhưng *nhạc nền* CC BY thì nghĩa vụ ghi nguồn đi theo video ở mọi
+   nơi nó được phát, và pipeline không giữ được lời hứa đó trên TikTok.
+
+11. ✅ **Thumbnail** — trích 1 frame thật từ mp4 đã xuất (nên cover không thể quảng
+   cáo một video không tồn tại), làm tối -18%, **xoá dải phụ đề burn-in**, rồi vẽ
+   tên chủ đề cỡ lớn. Mỗi tỉ lệ một file: `<runId>_cover.jpg`,
+   `<runId>_portrait_cover.jpg`.
+
+   Chiều cao dải che lấy **đúng công thức `frameMetrics()` đã vẽ scrim của video** —
+   một nguồn sự thật duy nhất, không thể lệch. Vị trí tiêu đề tự đổi theo khung:
+   9:16 dải chiếm ~32% nên tiêu đề nằm trong ảnh (cũng là chỗ duy nhất TikTok không
+   crop mất ở lưới profile); 16:9 dải chiếm ~45% nên tiêu đề chuyển vào trong dải,
+   thành lower-third.
+
+Kèm theo: **`host/verify-sync.js`** giờ có thêm cổng kiểm tra số sample, và nói rõ
+khi bỏ qua onset check vì nhạc nền lấp khoảng lặng.
+
 ### Đáng làm sau
 
 6. **Kiểm tra chất lượng bằng Whisper** — Groq có sẵn `whisper-large-v3` **miễn phí**
@@ -264,13 +311,10 @@ khác 0 khi lệch, dùng được làm cổng kiểm tra.
    tự động gần như free, và bắt được đúng loại lỗi mà normalizer bỏ sót.
 7. **Đọc chậm rồi đọc thường** — mỗi câu phát 2 lần: `speed 0.75` rồi `speed 1.0`.
    Cách luyện shadowing phổ biến. Chỉ cần sửa vòng lặp trong `container/cli/build_video.js`.
-8. **Nhạc nền nhẹ** — bed nhạc ở -30 dB dưới giọng nói, giúp video đỡ khô trên
-   mạng xã hội. Cần nguồn nhạc không bản quyền.
 9. **Xuất Anki / CSV** — mỗi run kèm một file cặp câu EN/VI, import thẳng vào Anki.
    Manifest đã có sẵn dữ liệu, chỉ là format lại.
 10. **Mức độ khó** (A2 / B1 / B2) — thêm tham số vào prompt Groq. Rẻ, mở rộng đối
     tượng người học.
-11. **Thumbnail** — trích 1 frame + overlay tên chủ đề, dùng làm cover TikTok.
 12. **Chế độ batch** — một request sinh nhiều topic. Bị chặn bởi OTPM free tier
     (hạn chế #10), nên phải rải theo hàng đợi có delay.
 
@@ -287,6 +331,16 @@ khác 0 khi lệch, dùng được làm cổng kiểm tra.
 ---
 
 ## Ghi chú vận hành
+
+### Tham số webhook mới
+
+| Tham số | Mặc định | Ý nghĩa |
+|---|---|---|
+| `music` | `true` | `false` → tắt nhạc. Chuỗi (vd `"bed.mp3"`) → dùng đúng file đó trong `assets/music/` |
+| `musicDb` | `-24` | bed thấp hơn giọng bao nhiêu LUFS; cho phép -60…-6 (số âm hơn = nhạc nhỏ hơn) |
+| `musicQuery` | — | lái tìm kiếm Openverse khi `assets/music/` rỗng |
+| `thumbnail` | `true` | `false` → không xuất cover |
+| `thumbnailTime` | tự chọn | giây, ép thời điểm trích frame |
 
 ```bash
 cd /Users/sangnguyen/Projects/ad-test/data/workflow

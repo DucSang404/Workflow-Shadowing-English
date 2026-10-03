@@ -63,7 +63,7 @@ const TTS_BODY = `={{ JSON.stringify({
 /** Node order is the execution order; connections are derived from it. */
 const CHAIN = ['Webhook', 'Prepare Run', 'Generate Dialogue', 'Parse & Normalize',
   'Synthesize Speech', 'Keep Successful Audio', 'Write Sentence Audio',
-  'Search Pexels', 'Collect Pexels', 'Fetch Scenes',
+  'Search Pexels', 'Collect Pexels', 'Fetch Scenes', 'Fetch Music',
   'Probe Durations', 'Build SRT', 'Assemble Video', 'Build Response', 'Respond to Webhook'];
 
 function linearConnections(chain) {
@@ -73,7 +73,9 @@ function linearConnections(chain) {
 }
 
 function definition({ credentials }) {
-  const x = (i) => [-620 + i * 220, 0];
+  // Position follows CHAIN, so adding a step shifts the canvas instead of parking
+  // the new node on top of an existing one.
+  const at = (name) => [-620 + CHAIN.indexOf(name) * 220, 0];
 
   const nodes = [
     {
@@ -81,7 +83,7 @@ function definition({ credentials }) {
       name: 'Webhook',
       type: 'n8n-nodes-base.webhook',
       typeVersion: 2.1,
-      position: x(0),
+      position: at('Webhook'),
       webhookId: 'a7c3f1e2-9b44-4d10-8e55-6f2b1c0d9a31',
       parameters: { httpMethod: 'POST', path: 'shadowing', responseMode: 'responseNode', options: {} },
     },
@@ -90,7 +92,7 @@ function definition({ credentials }) {
       name: 'Prepare Run',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: x(1),
+      position: at('Prepare Run'),
       parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('01_prepare_run.js') },
     },
     {
@@ -98,7 +100,7 @@ function definition({ credentials }) {
       name: 'Generate Dialogue',
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.5,
-      position: x(2),
+      position: at('Generate Dialogue'),
       // Groq's free tier rate-limits aggressively. n8n's retry interval is fixed
       // rather than exponential, so this is five attempts five seconds apart -
       // enough to ride out a short 429 window.
@@ -122,7 +124,7 @@ function definition({ credentials }) {
       name: 'Parse & Normalize',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: x(3),
+      position: at('Parse & Normalize'),
       parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('02_parse_normalize.js') },
     },
     {
@@ -130,7 +132,7 @@ function definition({ credentials }) {
       name: 'Synthesize Speech',
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.5,
-      position: x(4),
+      position: at('Synthesize Speech'),
       // A sentence that will not synthesise must not sink the run: the item is
       // passed through carrying its error, filtered out next, and reported at the
       // end as a skipped sentence.
@@ -158,7 +160,7 @@ function definition({ credentials }) {
       name: 'Keep Successful Audio',
       type: 'n8n-nodes-base.filter',
       typeVersion: 2.3,
-      position: x(5),
+      position: at('Keep Successful Audio'),
       parameters: {
         conditions: {
           options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
@@ -179,7 +181,7 @@ function definition({ credentials }) {
       name: 'Write Sentence Audio',
       type: 'n8n-nodes-base.readWriteFile',
       typeVersion: 1.1,
-      position: x(6),
+      position: at('Write Sentence Audio'),
       parameters: {
         operation: 'write',
         // The index comes from the paired item: the HTTP node replaces `json` with
@@ -194,7 +196,7 @@ function definition({ credentials }) {
       name: 'Search Pexels',
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.5,
-      position: x(7),
+      position: at('Search Pexels'),
       // Optional by design: with no key, a bad key or an exhausted quota this
       // passes the error through and every scene falls back to Openverse.
       onError: 'continueRegularOutput',
@@ -224,7 +226,7 @@ function definition({ credentials }) {
       name: 'Collect Pexels',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: x(8),
+      position: at('Collect Pexels'),
       parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('05_collect_pexels.js') },
     },
     {
@@ -232,7 +234,7 @@ function definition({ credentials }) {
       name: 'Fetch Scenes',
       type: 'n8n-nodes-base.executeCommand',
       typeVersion: 1,
-      position: x(9),
+      position: at('Fetch Scenes'),
       // Illustration is a nice-to-have: if every image lookup fails the script
       // still exits 0 with an empty list, and the video falls back to the flat
       // background rather than the run dying over a picture.
@@ -242,11 +244,25 @@ function definition({ credentials }) {
       },
     },
     {
+      id: 'n-music',
+      name: 'Fetch Music',
+      type: 'n8n-nodes-base.executeCommand',
+      typeVersion: 1,
+      position: at('Fetch Music'),
+      // Same contract as Fetch Scenes: a bed is a nice-to-have, so the script
+      // exits 0 with `music: null` when there is nothing to use and the run keeps
+      // going with speech-only audio.
+      parameters: {
+        executeOnce: true,
+        command: `=node ${IN_CONTAINER}/container/cli/fetch_music.js '{{ $('Prepare Run').first().json.workDir }}'`,
+      },
+    },
+    {
       id: 'n-probe',
       name: 'Probe Durations',
       type: 'n8n-nodes-base.executeCommand',
       typeVersion: 1,
-      position: x(10),
+      position: at('Probe Durations'),
       parameters: {
         executeOnce: true,
         command: `=node ${IN_CONTAINER}/container/cli/probe_durations.js '{{ $('Prepare Run').first().json.workDir }}'`,
@@ -257,7 +273,7 @@ function definition({ credentials }) {
       name: 'Build SRT',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: x(11),
+      position: at('Build SRT'),
       parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('03_build_srt.js') },
     },
     {
@@ -265,7 +281,7 @@ function definition({ credentials }) {
       name: 'Assemble Video',
       type: 'n8n-nodes-base.executeCommand',
       typeVersion: 1,
-      position: x(12),
+      position: at('Assemble Video'),
       parameters: {
         executeOnce: true,
         command: `=node ${IN_CONTAINER}/container/cli/build_video.js '{{ $json.planPath }}'`,
@@ -276,7 +292,7 @@ function definition({ credentials }) {
       name: 'Build Response',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: x(13),
+      position: at('Build Response'),
       parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('04_build_response.js') },
     },
     {
@@ -284,7 +300,7 @@ function definition({ credentials }) {
       name: 'Respond to Webhook',
       type: 'n8n-nodes-base.respondToWebhook',
       typeVersion: 1.5,
-      position: x(14),
+      position: at('Respond to Webhook'),
       parameters: { respondWith: 'json', responseBody: '={{ JSON.stringify($json) }}', options: {} },
     },
   ];

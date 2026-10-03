@@ -69,6 +69,7 @@ data/workflow/
 │   ├── cli/                  ← gọi bởi Execute Command node
 │   │   ├── probe_durations.js
 │   │   ├── fetch_scenes.js
+│   │   ├── fetch_music.js
 │   │   └── build_video.js
 │   └── nodes/                ← nội dung Code node, nhóm theo workflow
 │       └── shadowing/
@@ -83,7 +84,8 @@ data/workflow/
 │   └── shadowing-stub.json
 │
 ├── assets/                   ← input do người dùng đưa vào (ảnh nền, nhạc)
-├── output/                   ← mp4 hoàn chỉnh (đường dẫn này nằm trong spec gốc)
+│   └── music/                ← bed nhạc bạn tự bỏ vào; `.openverse/` là cache tải về
+├── output/                   ← mp4 + .srt + .json + _cover.jpg (đường dẫn nằm trong spec gốc)
 ├── work/                     ← scratch theo từng run, xoá được bất cứ lúc nào
 └── n8n_data/                 ← volume DB của n8n, ĐỪNG ĐỤNG
 ```
@@ -217,7 +219,16 @@ sample. Dùng `volume` + `alimiter` (đã kiểm chứng giữ nguyên độ dà
 Đây cũng là lý do `probe_durations.js` chuyển mp3 sang WAV rồi mới đo: mp3 mang
 padding của encoder, lệch vài ms mỗi file, cộng dồn 8 câu là thấy rõ.
 
-**Ba cái bẫy của ffmpeg đã cắn một lần.** Cả ba đều **không báo lỗi**, chỉ cho ra
+**Nhạc nền lấp khoảng lặng, nên onset check tự bỏ qua khi có bed.** Thay vào đó
+`build_video.js` **so số sample** trước/sau khi mix và ghi vào run record; verify-sync
+fail nếu hai số khác nhau. Nhưng đó là kiểm tra số học — **sau mỗi lần sửa timeline,
+chạy thêm một run `{"music": false}`** để onset check (thứ duy nhất nhìn vào pixel
+thật) được thực thi.
+
+**`amix` mặc định `normalize=1`** — nó chia biên độ cho số input, tức là hạ giọng
+6 dB để nhường chỗ cho bed thấp hơn giọng 30 dB. Luôn viết `normalize=0`.
+
+**Bốn cái bẫy của ffmpeg đã cắn một lần.** Cả bốn đều **không báo lỗi**, chỉ cho ra
 video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạy:
 
 1. **`force_style` dùng *script unit* của ASS, không phải pixel.** SRT chuyển sang ASS
@@ -229,6 +240,13 @@ video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạ
    Muốn animate thì chia thành nhiều box width tĩnh + `enable='between(t,...)'`.
 3. **Trong nháy đơn của ffmpeg, đừng escape dấu phẩy bằng `\\,`.** Nháy đơn đã bỏ
    ý nghĩa phân tách rồi; thêm backslash làm expression fail lặng lẽ.
+4. **`drawtext` với `textfile` đo mỗi dòng bằng BYTE rồi vẽ ra bấy nhiêu KÝ TỰ.**
+   Mỗi ký tự non-ASCII ăn mất một ký tự ở **cuối chính dòng đó**. `"… · 0:38"` ra
+   `"… · 0:"`; tiêu đề tiếng Việt mất một chữ mỗi dòng. Cách chữa nằm ở
+   `writeTextFile()` trong `build_video.js`: đệm mỗi dòng thêm một dấu cách cho mỗi
+   byte UTF-8 dôi ra — phần bị cắt chính là mấy dấu cách đó nên không vẽ thừa gì.
+   **Đừng đổi sang `text=`**: chủ đề là input người dùng, phải escape qua hai tầng
+   parser của ffmpeg.
 
 ### Gọi API ảnh bên ngoài
 

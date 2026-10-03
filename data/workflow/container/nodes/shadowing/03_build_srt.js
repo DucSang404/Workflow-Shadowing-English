@@ -65,13 +65,34 @@ try {
   console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
 }
 
+// Music is optional in exactly the same way scenes are: the fetcher exits 0 with
+// `music: null` when it found nothing, and build_video.js ships speech only.
+let music = null;
+let musicReason = null;
+try {
+  const raw = $('Fetch Music').first().json.stdout;
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    music = parsed.music ?? null;
+    musicReason = parsed.reason ?? null;
+  }
+} catch (err) {
+  musicReason = err.message;
+  console.log(`[shadowing] run ${cfg.runId}: no music (${err.message})`);
+}
+
 const plan = {
   runId: cfg.runId,
+  topic: cfg.topic,
   workDir: cfg.workDir,
   srtPath: cfg.srtPath,
   outputs: cfg.outputs,
   gapSeconds: gap,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
+  // `db` travels with the file so build_video.js needs no second source of config.
+  music: music ? { ...music, db: cfg.music.db } : null,
+  thumbnail: cfg.thumbnail,
+  thumbnailTime: cfg.thumbnailTime,
   targetLufs: cfg.targetLufs,
   background: cfg.background,
   segments: segments.map((s) => ({ idx: s.idx, wav: s.wav, duration: s.duration })),
@@ -91,6 +112,8 @@ return [{
     skipped,
     scenes,
     scenesMissing,
+    music,
+    musicReason,
     expectedDurationSec: Math.round(cursor * 100) / 100,
   },
 }];

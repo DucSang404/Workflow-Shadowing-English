@@ -40,7 +40,12 @@ try {
     segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),
     scenes: srt.scenes,
     outputs: built.outputs,
+    covers: built.covers ?? [],
     durationSec: built.durationSec,
+    // host/verify-sync.js reads `audio` to prove the music bed did not move the
+    // timeline the subtitles were built from.
+    audio: built.audio ?? null,
+    music: built.music ?? null,
     loudness: built.loudness,
     skippedSentences: srt.skipped,
   }, null, 2), 'utf8');
@@ -61,6 +66,8 @@ return [{
     topic: cfg.topic,
     video: built.output,
     videos: built.outputs,
+    cover: built.cover ?? null,
+    covers: built.covers ?? [],
     subtitle: keptSrt,
     record: keptRecord,
     sentences: built.segments,
@@ -69,7 +76,13 @@ return [{
     orientation: cfg.orientation,
     durationSec: built.durationSec,
     sizeBytes: built.sizeBytes,
+    audio: built.audio ?? null,
     loudness: built.loudness,
+    // `music: null` means none was asked for or none was found; `used: false`
+    // means one was found and then rejected - the reason says which.
+    music: built.music
+      ? { ...built.music, lookup: srt.musicReason ?? null }
+      : { used: false, reason: srt.musicReason ?? 'no music' },
     skippedSentences: srt.skipped,
     scenes: {
       used: (srt.scenes ?? []).length,
@@ -77,6 +90,7 @@ return [{
       // Only CC BY images oblige a credit line; cc0 and Pexels do not.
       attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),
     },
+    coverError: built.coverError ?? null,
     workDirCleaned: cleaned,
   },
 }];

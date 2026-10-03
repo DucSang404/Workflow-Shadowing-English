@@ -40,6 +40,19 @@ const runId = `${stamp}_${Math.random().toString(36).slice(2, 8)}`;
 const workDir = `${ROOT}/work/${runId}`;
 fs.mkdirSync(workDir, { recursive: true });
 
+// Background music. `music` accepts three shapes so the common cases stay short:
+//   omitted / true  -> use assets/music/ if anything is in there, else look for a
+//                      CC0 bed on Openverse
+//   false / "off"   -> speech only, exactly as before this existed
+//   "<name or path>" -> that file; a bare name resolves inside assets/music/
+// Everything is optional by design: no bed found is a normal run, not a failure.
+const musicRaw = body.music;
+const musicWord = typeof musicRaw === 'string' ? musicRaw.trim().toLowerCase() : '';
+const musicEnabled = !(musicRaw === false || musicWord === 'off' || musicWord === 'false');
+const musicFile = typeof musicRaw === 'string' && !['', 'on', 'off', 'auto', 'true', 'false'].includes(musicWord)
+  ? musicRaw.trim()
+  : '';
+
 // The dialogue is a two-person exchange, so it gets two voices. `voice` is kept
 // as a legacy escape hatch: pass it and both speakers use that single voice.
 const singleVoice = body.voice ? String(body.voice) : '';
@@ -59,6 +72,7 @@ return [{
     srtPath: `${workDir}/subtitle.srt`,
     planPath: `${workDir}/plan.json`,
     pexelsPath: `${workDir}/pexels.json`,
+    musicPath: `${workDir}/music.json`,
     outputPath: outputs[0].path,
     outputs,
     outputDir: `${ROOT}/output`,
@@ -73,6 +87,23 @@ return [{
     // Target loudness. -14 LUFS is what TikTok/YouTube normalise to, so hitting it
     // means the platform leaves the audio alone.
     targetLufs: clamp(body.targetLufs, -30, -8, -14),
+    music: {
+      enabled: musicEnabled,
+      file: musicFile,
+      query: String(body.musicQuery ?? '').trim().slice(0, 80),
+      // How far the bed sits under the speech, in LUFS. -24 is background you can
+      // actually hear: present through the shadowing gaps without competing with
+      // the line being repeated. Started at -30, which measured correct but played
+      // as near-silence on a phone speaker.
+      db: clamp(body.musicDb, -60, -6, -24),
+    },
+    // The TikTok cover. Off by request only - it costs one extra frame decode.
+    thumbnail: body.thumbnail !== false,
+    // Where to freeze. Left null, build_video.js picks a point inside the first
+    // scene that no transition is passing through.
+    thumbnailTime: Number.isFinite(Number(body.thumbnailTime))
+      ? clamp(body.thumbnailTime, 0, 3600, 0)
+      : null,
     keepWorkDir: body.keepWorkDir === true,
   },
 }];

@@ -49,7 +49,19 @@ if (cues.length !== record.segments.length) {
   process.exit(1);
 }
 
-console.log(`run ${runId} — "${record.topic}"  gap=${record.gapSeconds}s  cues=${cues.length}`);
+const musicOn = record.music?.used === true;
+
+console.log(`run ${runId} — "${record.topic}"  gap=${record.gapSeconds}s  cues=${cues.length}`
+  + (musicOn ? `  music=${record.music.db}dB (${record.music.source})` : '  music=off'));
+
+// A music bed is mixed under the speech before the video is encoded, and the one
+// thing it must not do is change how long the audio is - that would slide every
+// subtitle. build_video.js compares sample counts at the moment of the mix and
+// discards the mix if they differ; this re-checks the numbers it wrote down, so a
+// regression in that guard shows up here rather than on screen.
+const audio = record.audio ?? {};
+const samplesKnown = Number.isFinite(audio.voiceSamples) && Number.isFinite(audio.finalSamples);
+const badSamples = samplesKnown && audio.voiceSamples !== audio.finalSamples;
 
 let cursor = 0;
 let worstMs = 0;
@@ -118,6 +130,14 @@ if (primary) {
   const onsets = speechOnsets(primary.path, Math.max(0.4, record.gapSeconds * 0.6), primary.actual);
   if (onsets.length === cues.length) {
     worstOnsetMs = Math.max(...cues.map((c, i) => Math.abs(onsets[i] - c.start) * 1000));
+  } else if (musicOn) {
+    // Expected, not a fault: the shadowing gaps are no longer digital silence
+    // once a bed is playing under them, so the detector has nothing to find. The
+    // sample-count check above covers the same failure and covers it exactly, so
+    // nothing is lost - but run once with `"music": false` after changing the
+    // timeline, because that is the check that watches the shipped pixels.
+    console.log('\n  (onset check skipped: the music bed fills the gaps — '
+      + 'rerun with {"music": false} to exercise it)');
   } else {
     console.log(`\n  (onset check skipped: found ${onsets.length} speech starts for ${cues.length} cues)`);
   }
@@ -128,8 +148,15 @@ console.log(`  timeline total  : ${cursor.toFixed(3)} s`);
 if (worstOnsetMs !== null) {
   console.log(`  worst onset gap : ${worstOnsetMs.toFixed(0)} ms  (measured in the shipped mp4)`);
 }
+if (samplesKnown) {
+  console.log(`  audio samples   : voice=${audio.voiceSamples} final=${audio.finalSamples}`
+    + `${badSamples ? '  <-- THE MIX MOVED THE TIMELINE' : ''}`);
+}
 for (const r of results) {
   console.log(`  ${r.key.padEnd(9)} ${r.width}x${r.height}  file=${r.actual.toFixed(3)}s  delta=${(r.delta * 1000).toFixed(1)}ms`);
+}
+for (const c of record.covers ?? []) {
+  console.log(`  cover ${c.key.padEnd(9)} ${c.width}x${c.height}  @${c.atSec}s  "${c.title}"`);
 }
 
 // Onsets are measured by an energy threshold, so they land a little after the cue
@@ -139,7 +166,7 @@ const ONSET_TOLERANCE_MS = 350;
 const badFile = results.find((r) => r.delta * 1000 > 40);
 const badOnset = worstOnsetMs !== null && worstOnsetMs > ONSET_TOLERANCE_MS;
 
-if (worstMs > TOLERANCE_MS || badFile || badOnset) {
+if (worstMs > TOLERANCE_MS || badFile || badOnset || badSamples) {
   console.error('\nFAIL: subtitles are out of sync with the audio timeline');
   process.exit(1);
 }

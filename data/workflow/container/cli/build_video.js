@@ -2,10 +2,10 @@
 /**
  * usage: node build_video.js <planPath>
  *
- * Pads each sentence with the shadowing gap, concatenates, lays the result over
- * a static background and burns the SRT in. The audio is built once and reused
- * for every requested aspect ratio, so asking for both orientations costs one
- * extra video encode rather than a second full run.
+ * Pads each sentence with the shadowing gap, concatenates, optionally lays a
+ * music bed underneath, puts the result over a background and burns the SRT in.
+ * The audio is built once and reused for every requested aspect ratio, so asking
+ * for both orientations costs one extra video encode rather than a second full run.
  *
  * apad+concat keeps the audio sample-exact so it matches the SRT the Build SRT
  * node computed from the same durations.
@@ -26,29 +26,24 @@ if (!segs.length) { console.error('no usable audio segments'); process.exit(2); 
 const ffmpeg = (args) => execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', ...args], { stdio: 'pipe' });
 const ffprobe = (args) => execFileSync('ffprobe', ['-v', 'error', ...args], { encoding: 'utf8' }).trim();
 
-// --- 1. audio: pad each sentence with the gap, then concat -------------------
-const audioPath = path.join(workDir, 'full_audio.wav');
-const inputs = segs.flatMap((s) => ['-i', s.wav]);
-const pads = segs.map((_, i) => `[${i}:a]apad=pad_dur=${gapSeconds},aresample=${SR}[a${i}]`).join(';');
-const chain = segs.map((_, i) => `[a${i}]`).join('');
-ffmpeg([...inputs, '-filter_complex', `${pads};${chain}concat=n=${segs.length}:v=0:a=1[aout]`,
-  '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', audioPath]);
+// Anything handed to an ffmpeg filter has to survive its own parser: `:` separates
+// options and `'` quotes them, so every path that reaches one is escaped here.
+const escapeFilterPath = (p) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
 
-const durationSec = parseFloat(ffprobe(
-  ['-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', audioPath]));
+/**
+ * Sample count, not seconds. This is the number the burned subtitles actually
+ * depend on: two files can round to the same duration in seconds and still
+ * differ by samples, and only the sample count proves nothing moved.
+ */
+function sampleCount(file) {
+  const raw = ffprobe(['-select_streams', 'a:0', '-show_entries', 'stream=duration_ts',
+    '-of', 'default=nw=1:nk=1', file]);
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
 
-// --- 2. loudness: measure, then apply a static gain plus a peak limiter ------
-// Deliberately NOT the `loudnorm` filter. loudnorm resamples internally and can
-// return a different number of samples than it was given, which would slide the
-// burned subtitles out of sync with the audio they were computed from. Measuring
-// once and applying a constant gain cannot do that, and `alimiter` was checked on
-// this ffmpeg build to return byte-identical PCM length.
-//
-// -14 LUFS is what TikTok and YouTube normalise to, so hitting it means the
-// platform leaves the audio alone.
+/** ebur128 prints its summary to stderr even on success, so this needs spawnSync. */
 function measureLoudness(file) {
-  // ebur128 prints its summary to stderr even when the run succeeds, so this
-  // needs spawnSync - execFileSync only hands back stdout.
   const proc = spawnSync('ffmpeg', ['-nostdin', '-hide_banner', '-i', file,
     '-af', 'ebur128=peak=true', '-f', 'null', '-'], { encoding: 'utf8' });
   const out = proc.stderr ?? '';
@@ -60,7 +55,107 @@ function measureLoudness(file) {
   return { integrated: num('I'), truePeak: num('Peak') };
 }
 
-const { integrated, truePeak } = measureLoudness(audioPath);
+// --- 1. voice: pad each sentence with the gap, then concat -------------------
+const voicePath = path.join(workDir, 'voice.wav');
+const voiceInputs = segs.flatMap((s) => ['-i', s.wav]);
+const pads = segs.map((_, i) => `[${i}:a]apad=pad_dur=${gapSeconds},aresample=${SR}[a${i}]`).join(';');
+const chain = segs.map((_, i) => `[a${i}]`).join('');
+ffmpeg([...voiceInputs, '-filter_complex', `${pads};${chain}concat=n=${segs.length}:v=0:a=1[aout]`,
+  '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', voicePath]);
+
+const durationSec = parseFloat(ffprobe(
+  ['-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', voicePath]));
+const voiceSamples = sampleCount(voicePath);
+const voiceLoudness = measureLoudness(voicePath);
+
+// --- 2. music bed ------------------------------------------------------------
+// The bed is mixed in BEFORE loudness is measured, so the number the platform
+// sees is the number that was targeted.
+//
+// The one property this pipeline cannot lose is that the audio stays exactly as
+// long as the arithmetic the SRT was built from. So the bed is rendered to its
+// own file, `amix` is told to end with the voice (`duration=first`), and the
+// result's sample count is compared with the voice's. A mismatch means the mix
+// moved something, and the mix is thrown away rather than shipped: silent
+// subtitle drift is a far worse outcome than a video with no music.
+//
+// `normalize=0` matters. amix normalises by default, which would divide the
+// speech by the number of inputs - a 6 dB cut to the voice to make room for a
+// bed sitting 30 dB below it.
+const MUSIC_FADE_IN = 2.0;
+const MUSIC_FADE_OUT = 2.5;
+
+const requestedMusic = plan.music && plan.music.file && fs.existsSync(plan.music.file)
+  ? plan.music
+  : null;
+
+let audioPath = voicePath;
+let music = null;
+
+if (requestedMusic) {
+  const musicDb = Number.isFinite(requestedMusic.db) ? requestedMusic.db : -24;
+  try {
+    const bedLoudness = measureLoudness(requestedMusic.file);
+    // Programme loudness, not peak: the bed ends up `musicDb` under the speech as
+    // the ear averages it, which is what "N dB under the voice" means.
+    const bedGainDb = (Number.isFinite(bedLoudness.integrated) && Number.isFinite(voiceLoudness.integrated))
+      ? Math.round(((voiceLoudness.integrated + musicDb) - bedLoudness.integrated) * 10) / 10
+      : musicDb;
+
+    const bedPath = path.join(workDir, 'music_bed.wav');
+    const fadeOutStart = Math.max(0, durationSec - MUSIC_FADE_OUT);
+    ffmpeg([
+      // A bed shorter than the video simply repeats. At this level the seam is
+      // inaudible, which is why no crossfade is spent on it.
+      '-stream_loop', '-1', '-i', requestedMusic.file, '-t', durationSec.toFixed(6),
+      '-af', [
+        `volume=${bedGainDb}dB`,
+        `afade=t=in:st=0:d=${MUSIC_FADE_IN}`,
+        `afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${MUSIC_FADE_OUT}`,
+      ].join(','),
+      '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', bedPath,
+    ]);
+
+    const mixPath = path.join(workDir, 'full_audio.wav');
+    ffmpeg(['-i', voicePath, '-i', bedPath,
+      '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]',
+      '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', mixPath]);
+
+    const mixSamples = sampleCount(mixPath);
+    if (voiceSamples !== null && mixSamples !== voiceSamples) {
+      throw new Error(`mix changed the audio length (${voiceSamples} -> ${mixSamples} samples)`);
+    }
+
+    audioPath = mixPath;
+    music = {
+      used: true,
+      source: requestedMusic.source ?? null,
+      title: requestedMusic.title ?? null,
+      creator: requestedMusic.creator ?? null,
+      license: requestedMusic.license ?? null,
+      attribution: requestedMusic.attribution ?? null,
+      db: musicDb,
+      bedGainDb,
+      bedLufs: bedLoudness.integrated,
+      loopedFrom: requestedMusic.durationSec ?? null,
+      sampleExact: true,
+    };
+  } catch (err) {
+    audioPath = voicePath;
+    music = { used: false, reason: err.message, db: musicDb, sampleExact: null };
+  }
+}
+
+// --- 3. loudness: measure, then apply a static gain plus a peak limiter ------
+// Deliberately NOT the `loudnorm` filter. loudnorm resamples internally and can
+// return a different number of samples than it was given, which would slide the
+// burned subtitles out of sync with the audio they were computed from. Measuring
+// once and applying a constant gain cannot do that, and `alimiter` was checked on
+// this ffmpeg build to return byte-identical PCM length.
+//
+// -14 LUFS is what TikTok and YouTube normalise to, so hitting it means the
+// platform leaves the audio alone.
+const { integrated, truePeak } = audioPath === voicePath ? voiceLoudness : measureLoudness(audioPath);
 const gainDb = integrated !== null && Number.isFinite(integrated)
   ? Math.round((targetLufs - integrated) * 10) / 10
   : 0;
@@ -74,7 +169,7 @@ const audioFilter = gainDb
   ? `volume=${gainDb}dB,alimiter=limit=${limitLinear}:level=disabled`
   : '';
 
-// --- 3. scenes: one still per sentence, crossfaded -------------------------
+// --- 4. scenes: one still per sentence, crossfaded -------------------------
 // Each scene is held for exactly as long as its cue - the sentence plus the
 // shadowing gap - so the picture always matches the line being repeated. The
 // timeline comes from the same segment durations the SRT was computed from, so
@@ -133,11 +228,29 @@ function sceneChain(width, height) {
   return { inputs, filters, label: '[scenes]' };
 }
 
-// --- 4. one video encode per requested aspect ratio --------------------------
-const escapedSrt = srtPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+/**
+ * Subtitle geometry for a frame size, in pixels.
+ *
+ * This is the single source of truth for where the text sits. The video burns it
+ * in from here and the cover erases exactly this band - if the two ever computed
+ * it separately, the cover would cut the subtitle in half and nothing would say so.
+ */
+function frameMetrics(width, height) {
+  const portrait = height > width;
+  const fontPx = Math.round(width * (portrait ? 0.052 : 0.041));
+  // Portrait needs a far larger bottom margin than landscape: TikTok's caption
+  // and button rail cover roughly the lower fifth of the screen.
+  const marginPx = Math.round(height * (portrait ? 0.20 : 0.16));
+  return { portrait, fontPx, marginPx, scrimH: Math.round(marginPx + fontPx * 4) };
+}
+
+// --- 5. one video encode per requested aspect ratio --------------------------
+const escapedSrt = escapeFilterPath(srtPath);
 const hasBg = background && fs.existsSync(background);
 
 function renderVideo({ width, height, path: outputPath }) {
+  const { portrait, fontPx, marginPx, scrimH } = frameMetrics(width, height);
+
   const bgInput = hasBg
     ? ['-loop', '1', '-framerate', '25', '-i', background]
     : ['-f', 'lavfi', '-i', `color=c=0x14161A:s=${width}x${height}:r=25`];
@@ -151,18 +264,11 @@ function renderVideo({ width, height, path: outputPath }) {
   // at 720p and pushes the text clean off a 1920-tall frame - which renders as a
   // completely blank video, with no error. So metrics are chosen in pixels and
   // converted here.
-  //
-  // Portrait needs a far larger bottom margin than landscape: TikTok's caption
-  // and button rail cover roughly the lower fifth of the screen.
-  const portrait = height > width;
   const scale = height / ASS_PLAY_RES_Y;
   const toScriptUnits = (px) => Math.max(1, Math.round(px / scale));
   // Outline and shadow are script units too, and they are small enough that
   // rounding to a whole unit doubles them. ASS takes decimals here.
   const toScriptUnitsFine = (px) => Math.max(0.1, Math.round((px / scale) * 10) / 10);
-
-  const fontPx = Math.round(width * (portrait ? 0.052 : 0.041));
-  const marginPx = Math.round(height * (portrait ? 0.20 : 0.16));
 
   const style = [
     'FontName=DejaVu Sans', `FontSize=${toScriptUnits(fontPx)}`,
@@ -187,7 +293,6 @@ function renderVideo({ width, height, path: outputPath }) {
     // the picture is dimmed and a scrim laid under the subtitle band. The text
     // already carries an outline; this is what keeps it readable over a bright
     // sky or a white wall.
-    const scrimH = Math.round(marginPx + fontPx * 4);
     const { inputs, filters } = sceneChain(width, height);
     const audioIndex = sceneTimeline.length;
 
@@ -211,19 +316,202 @@ function renderVideo({ width, height, path: outputPath }) {
   };
 }
 
+// --- 6. cover: one frame out of the finished video, captioned ----------------
+// The frame is pulled from the file that actually shipped, so the cover can never
+// advertise a video that was not made. What it must not show is the burned-in
+// subtitle: a cover is read at thumbnail size and a line of dialogue there is
+// noise. The subtitle band is erased using the same geometry that drew it, and
+// the strip is reused as a footer so it reads as design rather than a redaction.
+const COVER_FONT_BOLD = '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf';
+const COVER_FONT = '/usr/share/fonts/dejavu/DejaVuSans.ttf';
+// DejaVu Sans Bold in capitals averages this much of the font size per glyph.
+// Measured off a rendered cover, then rounded up: drawtext cannot report the width
+// it produced, so a long title is shrunk against this estimate and erring high
+// means erring towards text that fits.
+const CAPS_ADVANCE_RATIO = 0.76;
+const COVER_TEXT_WIDTH = 0.88; // fraction of the frame a title may occupy
+
+/**
+ * Writes a drawtext `textfile`, padded past an ffmpeg bug.
+ *
+ * drawtext measures each line of a textfile in BYTES and then renders that many
+ * CHARACTERS, so every non-ASCII character silently costs one character off the
+ * end of its own line. "SHADOWING · 6 LINES · 0:38" came out as "...0:", and a
+ * Vietnamese topic lost a word per line. Padding each line with one trailing space
+ * per extra UTF-8 byte feeds the truncation exactly what it wants to eat; the
+ * spaces are what gets cut, so nothing is rendered that was not asked for.
+ *
+ * Verified against DejaVu Sans Bold at both frame sizes. `text=` was the other
+ * option and is worse: the topic is user input and would need escaping through two
+ * levels of ffmpeg parser.
+ */
+function writeTextFile(file, lines) {
+  const padded = lines.map((line) => {
+    const deficit = Buffer.byteLength(line, 'utf8') - [...line].length;
+    return line + ' '.repeat(Math.max(0, deficit));
+  });
+  fs.writeFileSync(file, padded.join('\n'), 'utf8');
+}
+
+/** Greedy wrap, then an ellipsis if the title simply will not fit in `maxLines`. */
+function wrapTitle(text, maxChars, maxLines) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (!line || next.length <= maxChars) line = next;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  if (lines.length <= maxLines) return lines;
+
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = `${kept[maxLines - 1].slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+  return kept;
+}
+
+/**
+ * When to freeze. Default is early in the first scene but past the point where a
+ * transition could be halfway through, so the cover is one clean picture rather
+ * than two dissolved together.
+ */
+function coverTimestamp() {
+  if (Number.isFinite(plan.thumbnailTime)) {
+    return Math.min(Math.max(0, plan.thumbnailTime), Math.max(0, durationSec - 0.2));
+  }
+  const firstHold = sceneTimeline ? sceneTimeline[0].hold : durationSec;
+  return Math.max(0.4, Math.min(firstHold * 0.45, 3.0, Math.max(0.4, durationSec - 0.5)));
+}
+
+function renderCover(video) {
+  const { portrait, scrimH } = frameMetrics(video.width, video.height);
+  const coverPath = video.path.replace(/\.mp4$/, '_cover.jpg');
+  const topic = String(plan.topic ?? '').trim() || 'shadowing practice';
+
+  const maxChars = portrait ? 16 : 24;
+  const titleLines = wrapTitle(topic.toUpperCase(), maxChars, 3);
+  const longest = Math.max(...titleLines.map((l) => [...l].length), 1);
+  const titlePx = Math.max(20, Math.floor(Math.min(
+    video.width * (portrait ? 0.095 : 0.070),
+    (video.width * COVER_TEXT_WIDTH) / (longest * CAPS_ADVANCE_RATIO),
+  )));
+
+  const mins = Math.floor(durationSec / 60);
+  const secs = String(Math.round(durationSec % 60)).padStart(2, '0');
+  const footerPx = Math.max(12, Math.round(video.width * (portrait ? 0.024 : 0.020)));
+
+  // Written to files rather than inlined: drawtext's `text=` would need every
+  // colon, backslash, quote and percent sign escaped, and a topic is user input.
+  const titleFile = path.join(workDir, `cover_title_${video.key}.txt`);
+  const footerFile = path.join(workDir, `cover_footer_${video.key}.txt`);
+  writeTextFile(titleFile, titleLines);
+  writeTextFile(footerFile, [`SHADOWING · ${segs.length} LINES · ${mins}:${secs}`]);
+
+  // Where the title goes depends on how much of the frame the strip eats, and that
+  // is decided by the subtitle geometry rather than by taste. A 9:16 frame gives
+  // the strip about a third and the picture keeps the rest, so the title sits in
+  // the picture - which is also the only place TikTok will not crop it away in the
+  // profile grid. A 16:9 frame gives the strip nearly half, and a title floating
+  // above a near-empty black slab looks like an accident, so it moves into it.
+  const footerBand = Math.round(footerPx * 2.6);
+  const titleInBand = scrimH / video.height > 0.34;
+  const titleY = titleInBand
+    ? `${video.height - scrimH}+(${scrimH}-${footerBand}-text_h)/2`
+    // Nudged above dead centre: at thumbnail size a title that sits high reads
+    // faster, and it keeps clear of the strip.
+    : `(h-${scrimH}-text_h)/2-${Math.round(video.height * 0.04)}`;
+  const footerY = titleInBand
+    ? `${video.height - footerBand}+(${footerBand}-text_h)/2`
+    : `${video.height - scrimH}+(${scrimH}-text_h)/2`;
+
+  const filters = [
+    'eq=brightness=-0.18:saturation=0.90',
+    // The burned-in subtitle has to go, and it has to go completely. White text
+    // with a black outline stays legible through anything short of opaque: 0.92
+    // left the whole line readable and even 0.985 left a ghost of it, because a
+    // 1.5% white on a flat dark slab is still four levels of difference. So the
+    // strip is solid, in the same colour as the flat background, with a hairline
+    // along its top edge so it reads as a caption bar rather than a redaction.
+    //
+    // Its height is the video's own subtitle geometry, not a guess: whatever the
+    // scrim was tall enough to sit behind, this is tall enough to cover.
+    `drawbox=x=0:y=${video.height - scrimH}:w=${video.width}:h=${scrimH}:color=0x14161A:t=fill`,
+    `drawbox=x=0:y=${video.height - scrimH}:w=${video.width}:h=${Math.max(2, Math.round(video.height * 0.002))}:color=white@0.16:t=fill`,
+    [
+      `drawtext=fontfile='${escapeFilterPath(COVER_FONT_BOLD)}'`,
+      `textfile='${escapeFilterPath(titleFile)}'`,
+      'fontcolor=white',
+      `fontsize=${titlePx}`,
+      `line_spacing=${Math.round(titlePx * 0.22)}`,
+      `borderw=${Math.max(2, Math.round(titlePx * 0.055))}`,
+      'bordercolor=black@0.85',
+      'shadowx=0',
+      `shadowy=${Math.max(2, Math.round(titlePx * 0.06))}`,
+      'shadowcolor=black@0.5',
+      'x=(w-text_w)/2',
+      `y=${titleY}`,
+    ].join(':'),
+    [
+      `drawtext=fontfile='${escapeFilterPath(COVER_FONT)}'`,
+      `textfile='${escapeFilterPath(footerFile)}'`,
+      'fontcolor=white@0.72',
+      `fontsize=${footerPx}`,
+      'x=(w-text_w)/2',
+      `y=${footerY}`,
+    ].join(':'),
+  ].join(',');
+
+  ffmpeg(['-ss', coverTimestamp().toFixed(3), '-i', video.path, '-frames:v', '1',
+    '-vf', filters, '-q:v', '2', coverPath]);
+
+  return {
+    key: video.key,
+    path: coverPath,
+    width: video.width,
+    height: video.height,
+    atSec: Math.round(coverTimestamp() * 100) / 100,
+    title: titleLines.join(' / '),
+    sizeBytes: fs.statSync(coverPath).size,
+  };
+}
+
 const rendered = outputs.map(renderVideo);
+
+// A cover is packaging, not the product: a failure here is reported and the run
+// still returns its videos.
+const covers = [];
+let coverError = null;
+if (plan.thumbnail !== false) {
+  for (const video of rendered) {
+    try {
+      covers.push(renderCover(video));
+    } catch (err) {
+      coverError = err.message.split('\n').slice(-3).join(' ').slice(0, 300);
+    }
+  }
+}
 
 process.stdout.write(JSON.stringify({
   ok: true,
   output: rendered[0].path,
   outputs: rendered,
+  cover: covers[0]?.path ?? null,
+  covers,
+  coverError,
   srt: srtPath,
   segments: segs.length,
   durationSec: Math.round(durationSec * 100) / 100,
   sizeBytes: rendered[0].sizeBytes,
+  audio: {
+    sampleRate: SR,
+    voiceSamples,
+    finalSamples: sampleCount(audioPath),
+  },
+  music,
   loudness: {
     measuredLufs: integrated,
     measuredTruePeak: truePeak,
+    voiceLufs: voiceLoudness.integrated,
     gainDb,
     targetLufs,
     limiter: audioFilter ? `${TRUE_PEAK_CEILING} dBTP` : null,

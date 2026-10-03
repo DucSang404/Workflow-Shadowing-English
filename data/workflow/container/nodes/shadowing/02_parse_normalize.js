@@ -111,9 +111,12 @@ const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
   return { idx: i + 1, speaker, en, vi, imageQuery, ttsText: normalizeForTts(en) };
 });
 
+// The manifest is the contract the container/cli/* scripts read: they take a
+// directory on argv and nothing else, so anything they need has to be in here.
+// fetch_music.js reads `music` the way fetch_scenes.js reads `sentences`.
 fs.writeFileSync(
   cfg.manifestPath,
-  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, sentences }, null, 2),
+  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music, sentences }, null, 2),
   'utf8',
 );
 
