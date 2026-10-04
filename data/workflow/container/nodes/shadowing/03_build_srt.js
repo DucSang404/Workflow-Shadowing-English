@@ -35,7 +35,13 @@ function srtTime(sec) {
   ].join(':') + ',' + pad(total % 1000, 3);
 }
 
-let cursor = 0;
+// The title card sits in front of everything, so every cue starts that much
+// later. This is the ONE place the offset is decided for the subtitles, and
+// build_video.js prepends exactly the same number of milliseconds of silence to
+// the audio - see the note on `introMs` in 01_prepare_run.js.
+const introSec = cfg.intro ? cfg.introMs / 1000 : 0;
+
+let cursor = introSec;
 const cues = segments.map((seg, i) => {
   const start = cursor;
   // The cue deliberately stays up through the silence: the learner is repeating
@@ -55,12 +61,14 @@ fs.writeFileSync(cfg.srtPath, srt, 'utf8');
 // image could be found, and build_video.js falls back to the flat background.
 let scenes = [];
 let scenesMissing = [];
+let coverBackground = null;
 try {
   const raw = $('Fetch Scenes').first().json.stdout;
   if (raw) {
     const parsed = JSON.parse(raw);
     scenes = parsed.scenes ?? [];
     scenesMissing = parsed.missing ?? [];
+    coverBackground = parsed.coverBackground ?? null;
   }
 } catch (err) {
   console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
@@ -89,6 +97,10 @@ const plan = {
   srtPath: cfg.srtPath,
   outputs: cfg.outputs,
   gapSeconds: gap,
+  introSec,
+  introMs: cfg.intro ? cfg.introMs : 0,
+  brand: cfg.brand,
+  coverBackground,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
   // `db` travels with the file so build_video.js needs no second source of config.
   music: music ? { ...music, db: cfg.music.db } : null,
@@ -115,6 +127,7 @@ return [{
     scenesMissing,
     music,
     musicReason,
+    introSec,
     expectedDurationSec: Math.round(cursor * 100) / 100,
   },
 }];

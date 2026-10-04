@@ -60,8 +60,29 @@ const voicePath = path.join(workDir, 'voice.wav');
 const voiceInputs = segs.flatMap((s) => ['-i', s.wav]);
 const pads = segs.map((_, i) => `[${i}:a]apad=pad_dur=${gapSeconds},aresample=${SR}[a${i}]`).join(';');
 const chain = segs.map((_, i) => `[a${i}]`).join('');
-ffmpeg([...voiceInputs, '-filter_complex', `${pads};${chain}concat=n=${segs.length}:v=0:a=1[aout]`,
+// The title card goes in front of the whole video, so the speech starts that much
+// later. `adelay` takes whole milliseconds and at 24 kHz a millisecond is exactly
+// 24 samples, which is what keeps this in lockstep with the identical shift
+// 03_build_srt.js applied to every cue. A fractional offset here would be the
+// start of exactly the drift this pipeline is built to prevent.
+const introMs = plan.introMs ?? 0;
+const delay = introMs ? `,adelay=${introMs}` : '';
+
+ffmpeg([...voiceInputs, '-filter_complex',
+  `${pads};${chain}concat=n=${segs.length}:v=0:a=1${delay}[aout]`,
   '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', voicePath]);
+
+// Cheap, and it catches the one mistake that matters: if adelay ever rounded,
+// every subtitle would be off by that much for the whole video.
+if (introMs) {
+  const want = Math.round((introMs / 1000) * SR);
+  const got = sampleCount(voicePath) - segs.reduce((n, sg) => n + Math.round(sg.duration * SR)
+    + Math.round(gapSeconds * SR), 0);
+  if (Math.abs(got - want) > SR / 100) {
+    console.error(`intro silence is ${got} samples, expected about ${want}`);
+    process.exit(3);
+  }
+}
 
 const durationSec = parseFloat(ffprobe(
   ['-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', voicePath]));
@@ -193,135 +214,6 @@ function sceneForEachSegment() {
   });
 }
 
-const sceneTimeline = sceneForEachSegment();
-
-/**
- * Builds the inputs and filter chain for the scene slideshow.
- *
- * xfade consumes `XFADE_SEC` of overlap per transition, so each still is decoded
- * for its hold plus one transition and the k-th transition is offset to the sum
- * of every earlier hold. That puts each cut exactly on a cue boundary and makes
- * the chain output one transition longer than the audio, which `-t` then trims.
- */
-function sceneChain(width, height) {
-  const inputs = [];
-  const filters = [];
-
-  sceneTimeline.forEach(({ file, hold }, i) => {
-    inputs.push('-loop', '1', '-framerate', String(FPS), '-t', (hold + XFADE_SEC).toFixed(3), '-i', file);
-    filters.push(
-      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase`
-      + `,crop=${width}:${height},setsar=1,fps=${FPS},format=yuv420p[s${i}]`,
-    );
-  });
-
-  let label = '[s0]';
-  let offset = 0;
-  for (let i = 1; i < sceneTimeline.length; i += 1) {
-    offset += sceneTimeline[i - 1].hold;
-    const out = i === sceneTimeline.length - 1 ? '[scenes]' : `[x${i}]`;
-    filters.push(`${label}[s${i}]xfade=transition=fade:duration=${XFADE_SEC}:offset=${offset.toFixed(3)}${out}`);
-    label = out;
-  }
-  if (sceneTimeline.length === 1) filters.push('[s0]null[scenes]');
-
-  return { inputs, filters, label: '[scenes]' };
-}
-
-/**
- * Subtitle geometry for a frame size, in pixels.
- *
- * This is the single source of truth for where the text sits. The video burns it
- * in from here and the cover erases exactly this band - if the two ever computed
- * it separately, the cover would cut the subtitle in half and nothing would say so.
- */
-function frameMetrics(width, height) {
-  const portrait = height > width;
-  const fontPx = Math.round(width * (portrait ? 0.052 : 0.041));
-  // Portrait needs a far larger bottom margin than landscape: TikTok's caption
-  // and button rail cover roughly the lower fifth of the screen.
-  const marginPx = Math.round(height * (portrait ? 0.20 : 0.16));
-  return { portrait, fontPx, marginPx, scrimH: Math.round(marginPx + fontPx * 4) };
-}
-
-// --- 5. one video encode per requested aspect ratio --------------------------
-const escapedSrt = escapeFilterPath(srtPath);
-const hasBg = background && fs.existsSync(background);
-
-function renderVideo({ width, height, path: outputPath }) {
-  const { portrait, fontPx, marginPx, scrimH } = frameMetrics(width, height);
-
-  const bgInput = hasBg
-    ? ['-loop', '1', '-framerate', '25', '-i', background]
-    : ['-f', 'lavfi', '-i', `color=c=0x14161A:s=${width}x${height}:r=25`];
-  const bgFilter = hasBg
-    ? `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`
-    : 'setsar=1';
-
-  // force_style numbers are ASS *script units*, not pixels. Converting an SRT
-  // gives it the default PlayResY of 288, and libass then scales everything by
-  // frameHeight/288. Feeding pixel values straight in therefore works by accident
-  // at 720p and pushes the text clean off a 1920-tall frame - which renders as a
-  // completely blank video, with no error. So metrics are chosen in pixels and
-  // converted here.
-  const scale = height / ASS_PLAY_RES_Y;
-  const toScriptUnits = (px) => Math.max(1, Math.round(px / scale));
-  // Outline and shadow are script units too, and they are small enough that
-  // rounding to a whole unit doubles them. ASS takes decimals here.
-  const toScriptUnitsFine = (px) => Math.max(0.1, Math.round((px / scale) * 10) / 10);
-
-  const style = [
-    'FontName=DejaVu Sans', `FontSize=${toScriptUnits(fontPx)}`,
-    'PrimaryColour=&H00FFFFFF', 'OutlineColour=&H00000000',
-    'BorderStyle=1',
-    `Outline=${toScriptUnitsFine(5)}`, `Shadow=${toScriptUnitsFine(2)}`,
-    'Alignment=2', `MarginV=${toScriptUnits(marginPx)}`,
-  ].join(',');
-
-  const subtitleFilter = `subtitles='${escapedSrt}':fontsdir=/usr/share/fonts:force_style='${style}'`;
-  const af = audioFilter ? ['-af', audioFilter] : [];
-  const encode = [
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-shortest', outputPath,
-  ];
-
-  if (!sceneTimeline) {
-    ffmpeg([...bgInput, '-i', audioPath, '-vf', [bgFilter, subtitleFilter].join(','),
-      ...af, '-t', String(durationSec), ...encode]);
-  } else {
-    // A photograph behind white text is far busier than the flat background, so
-    // the picture is dimmed and a scrim laid under the subtitle band. The text
-    // already carries an outline; this is what keeps it readable over a bright
-    // sky or a white wall.
-    const { inputs, filters } = sceneChain(width, height);
-    const audioIndex = sceneTimeline.length;
-
-    const graph = [
-      ...filters,
-      `[scenes]eq=brightness=-0.10:saturation=0.92`
-      + `,drawbox=x=0:y=${height - scrimH}:w=${width}:h=${scrimH}:color=black@0.38:t=fill`
-      + `,${subtitleFilter}[v]`,
-    ].join(';');
-
-    ffmpeg([...inputs, '-i', audioPath, '-filter_complex', graph,
-      '-map', '[v]', '-map', `${audioIndex}:a`, ...af, '-t', String(durationSec), ...encode]);
-  }
-
-  return {
-    key: portrait ? 'portrait' : 'landscape',
-    path: outputPath,
-    width,
-    height,
-    sizeBytes: fs.statSync(outputPath).size,
-  };
-}
-
-// --- 6. cover: one frame out of the finished video, captioned ----------------
-// The frame is pulled from the file that actually shipped, so the cover can never
-// advertise a video that was not made. What it must not show is the burned-in
-// subtitle: a cover is read at thumbnail size and a line of dialogue there is
-// noise. The subtitle band is erased using the same geometry that drew it, and
-// the strip is reused as a footer so it reads as design rather than a redaction.
 const COVER_FONT_BOLD = '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf';
 const COVER_FONT = '/usr/share/fonts/dejavu/DejaVuSans.ttf';
 // DejaVu Sans Bold in capitals averages this much of the font size per glyph.
@@ -375,17 +267,337 @@ function wrapTitle(text, maxChars, maxLines) {
  * transition could be halfway through, so the cover is one clean picture rather
  * than two dissolved together.
  */
+
+/**
+ * Renders the branded title card to a png.
+ *
+ * Flat background rather than a dimmed photo, on purpose: the point of the card
+ * is that every cover on the profile grid has the SAME structure, and a photo
+ * behind it reintroduces exactly the variation it was added to remove. Only the
+ * topic line changes between videos.
+ *
+ * Everything sits inside the middle of the frame. A profile grid crops a 9:16
+ * cover towards a squarer shape, so anything near the top or bottom edge is the
+ * first thing to be cut off.
+ */
+function renderCard(width, height) {
+  const portrait = height > width;
+  const brand = plan.brand ?? {};
+  const accent = String(brand.accent ?? '#F5B544').replace('#', '0x');
+  const cardPath = path.join(workDir, `card_${width}x${height}.png`);
+
+  // Nothing may come within this much of an edge. A profile grid crops a 9:16
+  // cover towards a squarer shape and TikTok's own chrome eats the rest, so the
+  // card is laid out as if the frame were narrower and shorter than it is.
+  const SAFE_W = 0.84;
+
+  /** Largest size at which `chars` characters still fit inside the safe width. */
+  const fit = (chars, cap) => Math.max(14, Math.floor(Math.min(cap, (width * SAFE_W) / (chars * CAPS_ADVANCE_RATIO))));
+
+  // Letter-spaced by hand: drawtext has no tracking, and the channel name has to
+  // read as a wordmark rather than as one more line of copy. The spacing doubles
+  // the character count, which is why it gets fitted too - unfitted it ran off
+  // both edges at 1080 wide.
+  const wordmark = String(brand.name ?? '').toUpperCase().split('').join(' ');
+  const namePx = fit([...wordmark].length, width * (portrait ? 0.042 : 0.032));
+
+  // Wrapped short on purpose. Fewer characters per line means a bigger type size
+  // for the same safe width, and at the size a profile grid actually renders,
+  // three big lines beat two small ones.
+  const titleLines = wrapTitle(String(plan.topic ?? '').toUpperCase() || 'SHADOWING', portrait ? 13 : 20, 3);
+  const titlePx = fit(Math.max(...titleLines.map((l) => [...l].length), 1), width * (portrait ? 0.105 : 0.075));
+
+  const kickerPx = Math.round(width * (portrait ? 0.026 : 0.020));
+  const lineGap = Math.round(titlePx * 0.22);
+
+  const nameFile = path.join(workDir, `card_name_${width}.txt`);
+  const kickerFile = path.join(workDir, `card_kicker_${width}.txt`);
+  const runtimeFile = path.join(workDir, `card_runtime_${width}.txt`);
+
+  const mins = Math.floor(durationSec / 60);
+  const secs = String(Math.round(durationSec % 60)).padStart(2, '0');
+
+  writeTextFile(nameFile, [wordmark]);
+  // One file per line, so each can be centred on its own. A single multi-line
+  // drawtext centres the BLOCK and left-aligns the lines inside it, which left
+  // a short last line hanging off to one side of an otherwise symmetric card.
+  const titleFiles = titleLines.map((line, i) => {
+    const file = path.join(workDir, `card_title_${width}_${i}.txt`);
+    writeTextFile(file, [line]);
+    return file;
+  });
+  writeTextFile(kickerFile, [String(brand.kicker ?? '').toUpperCase()]);
+  // Through a textfile, not `text=`: a colon inside `text=` ends the option and
+  // ffmpeg rejects the entire filter graph. "0:39" is enough to do it.
+  writeTextFile(runtimeFile, [`${mins}:${secs}`]);
+
+  // The block is measured in JS and centred as a whole, because drawtext can only
+  // see its own text_h - stacking by eye leaves a different gap every time the
+  // title wraps to a different number of lines.
+  const LINE = 1.18;
+  const ruleH = Math.max(3, Math.round(height * 0.0035));
+  const ruleW = Math.round(width * 0.14);
+  const titleStep = Math.round(titlePx * LINE + lineGap);
+  const titleH = titleLines.length * titleStep - lineGap;
+
+  const gapAfterName = Math.round(height * 0.022);
+  const gapAfterRule = Math.round(height * 0.030);
+  const gapBeforeKicker = Math.round(height * 0.038);
+  const gapAfterKicker = Math.round(height * 0.016);
+
+  const blockH = namePx * LINE + gapAfterName + ruleH + gapAfterRule + titleH
+    + gapBeforeKicker + kickerPx * LINE + gapAfterKicker + kickerPx * LINE;
+
+  // Slightly above centre: the lower half of a 9:16 frame is where TikTok puts
+  // the caption and the button rail.
+  let y = Math.round(height * 0.44 - blockH / 2);
+  const nameY = y;
+  y += Math.round(namePx * LINE) + gapAfterName;
+  const ruleY = y;
+  y += ruleH + gapAfterRule;
+  const titleY = y;
+  y += Math.round(titleH) + gapBeforeKicker;
+  const kickerY = y;
+  y += Math.round(kickerPx * LINE) + gapAfterKicker;
+  const runtimeY = y;
+
+  // An outline on every line, because the backdrop is now a photograph rather
+  // than a flat slab: without it a title crossing a bright window or a pale wall
+  // loses its edges exactly where it matters. Cheap insurance, and it lets the
+  // backdrop stay light enough to actually be seen.
+  const text = (file, px, colour, top, bold = true) => [
+    `drawtext=fontfile='${escapeFilterPath(bold ? COVER_FONT_BOLD : COVER_FONT)}'`,
+    `textfile='${escapeFilterPath(file)}'`,
+    `fontcolor=${colour}`,
+    `fontsize=${px}`,
+    `line_spacing=${lineGap}`,
+    `borderw=${Math.max(1, Math.round(px * 0.045))}`,
+    'bordercolor=0x0E1014@0.9',
+    'x=(w-text_w)/2',
+    `y=${top}`,
+  ].join(':');
+
+  // A backdrop of the place the conversation happens in, rather than a flat slab.
+  // The layout above does not change - only what sits behind it - so the profile
+  // grid still reads as one series.
+  //
+  // It has to be pushed well down before any text goes on it, in two stages: `eq`
+  // takes the brightness and colour out of the picture, then a full-frame wash in
+  // the brand background colour floors the contrast. Either alone left the title
+  // fighting with whatever happened to be behind it.
+  const backdrop = plan.coverBackground && fs.existsSync(plan.coverBackground)
+    ? plan.coverBackground
+    : null;
+
+  const base = backdrop
+    ? ['-i', backdrop]
+    : ['-f', 'lavfi', '-i', `color=c=0x0E1014:s=${width}x${height}`];
+
+  const dim = backdrop
+    ? [
+      `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+      `crop=${width}:${height}`,
+      'eq=brightness=-0.22:saturation=0.62',
+      `drawbox=x=0:y=0:w=${width}:h=${height}:color=0x0E1014@0.42:t=fill`,
+    ]
+    : [];
+
+  ffmpeg([
+    ...base,
+    '-frames:v', '1',
+    '-vf', [
+      ...dim,
+      text(nameFile, namePx, accent, nameY),
+      // x is computed here, not as `(w-${ruleW})/2`. drawbox evaluates its
+      // geometry ONCE at configuration time, where `w` is not yet known and
+      // reads as 0 - the rule silently lands against the left edge. Same trap as
+      // the animated box in CLAUDE.md.
+      `drawbox=x=${Math.round((width - ruleW) / 2)}:y=${ruleY}:w=${ruleW}:h=${ruleH}:color=${accent}:t=fill`,
+      ...titleFiles.map((file, i) => text(file, titlePx, 'white', titleY + i * titleStep)),
+      text(kickerFile, kickerPx, 'white@0.5', kickerY, false),
+      text(runtimeFile, kickerPx, 'white@0.4', runtimeY, false),
+    ].join(','),
+    cardPath,
+  ]);
+
+  return cardPath;
+}
+
+const sceneTimeline = sceneForEachSegment();
+const introSec = introMs / 1000;
+
+/**
+ * The flat fallback, as a still, so that a run with no usable photos takes the
+ * same code path as one with them instead of a second branch that is almost
+ * never exercised.
+ */
+function flatBackground(width, height) {
+  const file = path.join(workDir, `bg_${width}x${height}.png`);
+  if (hasBg) {
+    ffmpeg(['-i', background, '-frames:v', '1', '-vf',
+      `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`, file]);
+  } else {
+    ffmpeg(['-f', 'lavfi', '-i', `color=c=0x14161A:s=${width}x${height}`, '-frames:v', '1', file]);
+  }
+  return file;
+}
+
+/** Card first, then the scenes - or the flat still if there were none. */
+function timelineFor(width, height) {
+  const body = sceneTimeline
+    ?? [{ file: flatBackground(width, height), hold: durationSec - introSec }];
+  if (!introMs) return body;
+  return [{ file: renderCard(width, height), hold: introSec, raw: true }, ...body];
+}
+
+/**
+ * Builds the inputs and filter chain for the scene slideshow.
+ *
+ * xfade consumes `XFADE_SEC` of overlap per transition, so each still is decoded
+ * for its hold plus one transition and the k-th transition is offset to the sum
+ * of every earlier hold. That puts each cut exactly on a cue boundary and makes
+ * the chain output one transition longer than the audio, which `-t` then trims.
+ */
+function sceneChain(timeline, width, height) {
+  const inputs = [];
+  const filters = [];
+
+  timeline.forEach(({ file, hold, raw }, i) => {
+    inputs.push('-loop', '1', '-framerate', String(FPS), '-t', (hold + XFADE_SEC).toFixed(3), '-i', file);
+    // A photograph behind white text is far busier than a flat background, so
+    // each scene is dimmed and gets a scrim under the subtitle band. Applied per
+    // scene rather than to the whole chain because the title card must NOT be
+    // touched - it is already designed, and dimming it would mute the accent.
+    const { scrimH } = frameMetrics(width, height);
+    const dress = raw ? '' : `,eq=brightness=-0.10:saturation=0.92`
+      + `,drawbox=x=0:y=${height - scrimH}:w=${width}:h=${scrimH}:color=black@0.38:t=fill`;
+    filters.push(
+      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase`
+      + `,crop=${width}:${height},setsar=1,fps=${FPS},format=yuv420p${dress}[s${i}]`,
+    );
+  });
+
+  let label = '[s0]';
+  let offset = 0;
+  for (let i = 1; i < timeline.length; i += 1) {
+    offset += timeline[i - 1].hold;
+    const out = i === timeline.length - 1 ? '[scenes]' : `[x${i}]`;
+    filters.push(`${label}[s${i}]xfade=transition=fade:duration=${XFADE_SEC}:offset=${offset.toFixed(3)}${out}`);
+    label = out;
+  }
+  if (timeline.length === 1) filters.push('[s0]null[scenes]');
+
+  return { inputs, filters, label: '[scenes]' };
+}
+
+/**
+ * Subtitle geometry for a frame size, in pixels.
+ *
+ * This is the single source of truth for where the text sits. The video burns it
+ * in from here and the cover erases exactly this band - if the two ever computed
+ * it separately, the cover would cut the subtitle in half and nothing would say so.
+ */
+function frameMetrics(width, height) {
+  const portrait = height > width;
+  const fontPx = Math.round(width * (portrait ? 0.052 : 0.041));
+  // Portrait needs a far larger bottom margin than landscape: TikTok's caption
+  // and button rail cover roughly the lower fifth of the screen.
+  const marginPx = Math.round(height * (portrait ? 0.20 : 0.16));
+  return { portrait, fontPx, marginPx, scrimH: Math.round(marginPx + fontPx * 4) };
+}
+
+// --- 5. one video encode per requested aspect ratio --------------------------
+const escapedSrt = escapeFilterPath(srtPath);
+const hasBg = background && fs.existsSync(background);
+
+function renderVideo({ width, height, path: outputPath }) {
+  const { portrait, fontPx, marginPx } = frameMetrics(width, height);
+
+  // force_style numbers are ASS *script units*, not pixels. Converting an SRT
+  // gives it the default PlayResY of 288, and libass then scales everything by
+  // frameHeight/288. Feeding pixel values straight in therefore works by accident
+  // at 720p and pushes the text clean off a 1920-tall frame - which renders as a
+  // completely blank video, with no error. So metrics are chosen in pixels and
+  // converted here.
+  const scale = height / ASS_PLAY_RES_Y;
+  const toScriptUnits = (px) => Math.max(1, Math.round(px / scale));
+  // Outline and shadow are script units too, and they are small enough that
+  // rounding to a whole unit doubles them. ASS takes decimals here.
+  const toScriptUnitsFine = (px) => Math.max(0.1, Math.round((px / scale) * 10) / 10);
+
+  const style = [
+    'FontName=DejaVu Sans', `FontSize=${toScriptUnits(fontPx)}`,
+    'PrimaryColour=&H00FFFFFF', 'OutlineColour=&H00000000',
+    'BorderStyle=1',
+    `Outline=${toScriptUnitsFine(5)}`, `Shadow=${toScriptUnitsFine(2)}`,
+    'Alignment=2', `MarginV=${toScriptUnits(marginPx)}`,
+  ].join(',');
+
+  const subtitleFilter = `subtitles='${escapedSrt}':fontsdir=/usr/share/fonts:force_style='${style}'`;
+  const af = audioFilter ? ['-af', audioFilter] : [];
+  const encode = [
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-shortest', outputPath,
+  ];
+
+  const timeline = timelineFor(width, height);
+  const { inputs, filters } = sceneChain(timeline, width, height);
+
+  ffmpeg([...inputs, '-i', audioPath,
+    '-filter_complex', [...filters, `[scenes]${subtitleFilter}[v]`].join(';'),
+    '-map', '[v]', '-map', `${timeline.length}:a`, ...af, '-t', String(durationSec), ...encode]);
+
+  return {
+    key: portrait ? 'portrait' : 'landscape',
+    path: outputPath,
+    width,
+    height,
+    sizeBytes: fs.statSync(outputPath).size,
+  };
+}
+
+// --- 6. cover ----------------------------------------------------------------
+// The frame is pulled from the file that actually shipped, so the cover can never
+// advertise a video that was not made. What it must not show is the burned-in
+// subtitle: a cover is read at thumbnail size and a line of dialogue there is
+// noise. The subtitle band is erased using the same geometry that drew it, and
+// the strip is reused as a footer so it reads as design rather than a redaction.
 function coverTimestamp() {
   if (Number.isFinite(plan.thumbnailTime)) {
     return Math.min(Math.max(0, plan.thumbnailTime), Math.max(0, durationSec - 0.2));
   }
+  // Mid-card. This number is what buffer-publish hands Buffer as thumbnailOffset,
+  // so it decides what the profile grid shows - and the card is the only frame
+  // that looks the same on every video. Half way in keeps clear of the xfade
+  // that starts at the end of the card's hold.
+  if (introMs) return introSec / 2;
   const firstHold = sceneTimeline ? sceneTimeline[0].hold : durationSec;
   return Math.max(0.4, Math.min(firstHold * 0.45, 3.0, Math.max(0.4, durationSec - 0.5)));
 }
 
 function renderCover(video) {
-  const { portrait, scrimH } = frameMetrics(video.width, video.height);
   const coverPath = video.path.replace(/\.mp4$/, '_cover.jpg');
+
+  // With a title card in front, the cover is simply the frame Buffer will pick -
+  // already branded, already free of burned-in subtitle. Nothing to erase and
+  // nothing to caption, so this is a straight grab and the two can never
+  // disagree about what the cover shows.
+  if (introMs) {
+    ffmpeg(['-ss', coverTimestamp().toFixed(3), '-i', video.path, '-frames:v', '1',
+      '-q:v', '2', coverPath]);
+    return {
+      key: video.key,
+      path: coverPath,
+      width: video.width,
+      height: video.height,
+      atSec: Math.round(coverTimestamp() * 100) / 100,
+      title: String(plan.topic ?? ''),
+      fromCard: true,
+      sizeBytes: fs.statSync(coverPath).size,
+    };
+  }
+
+  const { portrait, scrimH } = frameMetrics(video.width, video.height);
   const topic = String(plan.topic ?? '').trim() || 'shadowing practice';
 
   const maxChars = portrait ? 16 : 24;
@@ -502,6 +714,7 @@ process.stdout.write(JSON.stringify({
   segments: segs.length,
   durationSec: Math.round(durationSec * 100) / 100,
   sizeBytes: rendered[0].sizeBytes,
+  introSec,
   audio: {
     sampleRate: SR,
     voiceSamples,

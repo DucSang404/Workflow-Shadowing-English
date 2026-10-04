@@ -4,13 +4,22 @@
  *
  * Finds one still per sentence and downloads it to <dir>/scene_NNN.jpg.
  *
- * Two sources, in order:
+ * Three sources, in order:
+ *   0. Local generator - SD 1.5 + LCM on the HOST at host.docker.internal:7860.
+ *                    Docker on macOS cannot reach the GPU, so it cannot live in
+ *                    compose. Tried first because it is the only source that
+ *                    always matches the sentence: limitation #13 in docs.md
+ *                    measured 2 usable photos out of 8 from the CC0 archives on
+ *                    an office topic.
  *   1. Pexels      - polished stock, needs a key. The key never reaches this
  *                    script: the workflow's Pexels node (which holds the n8n
  *                    credential) writes its results to pexels.json first, and
  *                    this script only reads those. See CLAUDE.md, "Secrets".
  *   2. Openverse   - Creative Commons photos, keyless, so scenes still work with
  *                    no Pexels key configured at all.
+ *
+ * The generator is a preference, not a dependency: if it does not answer, the
+ * run falls through to the stock tiers and nothing fails.
  *
  * The important design point is that a search yields *candidates*, not an answer.
  * Openverse indexes many providers and some of them (Wikimedia in particular)
@@ -34,6 +43,14 @@ const DOWNLOAD_TIMEOUT_MS = 45000;
 const MAX_PARALLEL = 3;               // be a polite guest on a keyless public API
 const NORMALISE_WIDTH = 1920;         // every scene is downscaled to this at most
 const MAX_CANDIDATES = 10;
+
+const IMAGEGEN_URL = 'http://host.docker.internal:7860';
+// Short: this only asks whether the service is up, and that answer decides
+// whether six generate calls are worth attempting at all.
+const IMAGEGEN_HEALTH_MS = 1500;
+// Generous: four LCM steps on an M2 is seconds, but the first call of a session
+// also pays for the model being paged in.
+const IMAGEGEN_MS = 120000;
 
 // Wikimedia and Flickr both reject clients that do not identify themselves, and
 // Wikimedia asks for a contact. A bare fetch() gets HTTP 429.
@@ -173,11 +190,78 @@ async function download(url, dest) {
   }
 }
 
+/**
+ * Asks the host generator for one scene. Returns null when it is not running,
+ * which is the normal case for anyone who has not started it.
+ */
+async function generateScene(sentence, dest, trace) {
+  try {
+    const res = await withTimeout(`${IMAGEGEN_URL}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // imagePrompt, NOT imageQuery. The query is keywords for a stock index and
+      // a diffusion model reads it as noise - measured, it returned a Persian
+      // manuscript for "team standup meeting office whiteboard". The prompt is
+      // the same scene written as a sentence, which works.
+      body: JSON.stringify({
+        prompt: sentence.imagePrompt || sentence.imageQuery || manifest.topic,
+        // Which of the two recurring characters is speaking this line. The
+        // dialogue already alternates A and B, so the series gets a consistent
+        // cast for free - the generator looks up assets/characters/<A|B>.png and
+        // conditions on it.
+        character: sentence.speaker ?? null,
+      }),
+    }, IMAGEGEN_MS);
+
+    if (!res.ok) {
+      throw new Error(`http ${res.status} ${(await res.text().catch(() => '')).slice(0, 120)}`);
+    }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < MIN_BYTES) throw new Error(`too small (${buf.length} bytes)`);
+
+    const raw = `${dest}.raw`;
+    fs.writeFileSync(raw, buf);
+    try {
+      // Same rule as a download: let ffmpeg decode it before believing it.
+      execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', raw,
+        '-vf', `scale='min(${NORMALISE_WIDTH},iw)':-2`, '-q:v', '4', dest], { stdio: 'pipe' });
+    } finally {
+      fs.rmSync(raw, { force: true });
+    }
+
+    return {
+      idx: sentence.idx,
+      file: dest,
+      query: sentence.imagePrompt || sentence.imageQuery,
+      matchedQuery: sentence.imagePrompt || sentence.imageQuery,
+      source: 'generated',
+      license: null,
+      attribution: null,
+      generateSeconds: Number(res.headers.get('x-generate-seconds')) || null,
+    };
+  } catch (err) {
+    trace.push(`imagegen: ${err.message}`);
+    return null;
+  }
+}
+
 async function resolveScene(sentence) {
   const tag = String(sentence.idx).padStart(3, '0');
   const dest = path.join(dir, `scene_${tag}.jpg`);
   const query = sentence.imageQuery || manifest.topic;
   const trace = [];
+
+  if (generatorUp) {
+    const made = await generateScene(sentence, dest, trace);
+    if (made) return made;
+  }
+  if (wantsOnlyAi) {
+    return {
+      idx: sentence.idx, query, missing: true,
+      reason: trace.slice(-2).join(' | ') || 'generator produced nothing',
+    };
+  }
 
   const candidates = [];
   if (pexelsByIdx[sentence.idx]) {
@@ -224,11 +308,38 @@ async function mapWithLimit(items, limit, worker) {
   return results;
 }
 
+const wantsStock = (manifest.imageSource ?? 'auto') === 'stock';
+const wantsOnlyAi = (manifest.imageSource ?? 'auto') === 'ai';
+let generatorUp = false;
+
+/** One probe for the whole run, rather than a dead connection per sentence. */
+async function generatorAvailable() {
+  if (wantsStock) return false;
+  try {
+    return (await withTimeout(`${IMAGEGEN_URL}/health`, {}, IMAGEGEN_HEALTH_MS)).ok;
+  } catch {
+    return false;
+  }
+}
+
 (async () => {
+  generatorUp = await generatorAvailable();
+  if (wantsOnlyAi && !generatorUp) {
+    // Asked for generated pictures only, and the generator is not running. Say
+    // so rather than quietly shipping a video with no scenes at all.
+    console.error('imageSource=ai but the generator at host.docker.internal:7860 is not answering');
+    process.exit(1);
+  }
+
   // Sentences are independent and each may walk a cascade of searches, so running
   // them serially took 31s for six lines. Unbounded parallelism was faster but
   // tripped rate limits, so it is capped instead.
-  const settled = await mapWithLimit(manifest.sentences, MAX_PARALLEL, async (sentence) => {
+  //
+  // One at a time once the generator is in play: there is a single GPU, so
+  // concurrent requests only queue behind each other while multiplying peak
+  // memory - on 16 GB that is how you get a swap storm instead of a speedup.
+  const limit = generatorUp ? 1 : MAX_PARALLEL;
+  const settled = await mapWithLimit(manifest.sentences, limit, async (sentence) => {
     try {
       return await resolveScene(sentence);
     } catch (err) {
@@ -236,8 +347,25 @@ async function mapWithLimit(items, limit, worker) {
     }
   });
 
+  // Backdrop for the title card. Generated rather than borrowed from scene 1,
+  // which has a character standing in the middle of exactly where the title goes.
+  // No `character` is passed, so the adapter stays at zero and nobody appears.
+  let coverBackground = null;
+  if (generatorUp && manifest.coverPrompt) {
+    const dest = path.join(dir, 'cover_bg.jpg');
+    const made = await generateScene(
+      { idx: 0, imagePrompt: manifest.coverPrompt, imageQuery: manifest.topic },
+      dest, [],
+    );
+    if (made) coverBackground = made.file;
+  }
+
   const scenes = settled.filter((r) => !r.missing).sort((a, b) => a.idx - b.idx);
   const missing = settled.filter((r) => r.missing).map(({ idx, query, reason }) => ({ idx, query, reason }));
 
-  process.stdout.write(JSON.stringify({ scenes, missing }));
+  process.stdout.write(JSON.stringify({
+    scenes, missing, coverBackground,
+    generator: generatorUp ? 'up' : 'off',
+    imageSource: manifest.imageSource ?? 'auto',
+  }));
 })().catch((err) => { console.error(err.message); process.exit(1); });

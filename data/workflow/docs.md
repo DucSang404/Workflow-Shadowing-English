@@ -21,7 +21,8 @@ Cập nhật: 2026-10-04
 | Normalize TTS | `$4.75` → "four dollars seventy-five cents"; `#12` → "twelve"; subtitle giữ nguyên |
 | Skip câu lỗi | 3/8 câu hỏng → video 29.35s từ 5 câu, SRT đánh số lại, không fail |
 | Nhạc nền | bed CC0 ở **-24 LUFS dưới giọng**; cùng một bed, khoảng lặng -38.5 dB (ở -30 là -44.5), giọng vẫn -14.8 dB |
-| Thumbnail | 1 cover `.jpg` cho mỗi tỉ lệ, phụ đề burn-in bị xoá sạch, tiêu đề tiếng Việt đủ dấu |
+| Thumbnail | title card 1.2s đốt vào đầu video, **nền là cảnh sinh riêng theo chủ đề**; `thumbnailOffset` trỏ giữa thẻ |
+| Đồng bộ sau khi thêm thẻ | drift **0.0 ms**, onset đo trên mp4 thật **276 ms** (ngưỡng 350) |
 | Dọn rác | `work/<runId>` xoá sạch; `output/` giữ `.mp4` + `.srt` + `.json` + `_cover.jpg` |
 
 ---
@@ -122,7 +123,63 @@ Lỗi này chỉ ảnh hưởng **phụ đề tiếng Việt** — phần đọc
 yêu cầu giữ nguyên thuật ngữ kỹ thuật/ngành nghề thay vì dịch. Sửa xong phải chạy
 lại `node host/deploy.js`. Ước lượng: 5 phút, nhưng cần vài run để kiểm chứng.
 
-### 13. Chất lượng ảnh sụt mạnh tuỳ chủ đề (khi chỉ có Openverse)
+### 13. ~~Chất lượng ảnh sụt mạnh tuỳ chủ đề~~ ✅ ĐÃ CHỮA bằng SD 1.5 local (2026-10-04)
+
+Chạy lại đúng chủ đề tệ nhất — standup với team dev, trước đây **2/8** ảnh đúng —
+bằng model sinh ảnh local: **6/6 đúng chủ đề**, ~7.2s mỗi ảnh.
+
+`host/imagegen/server.py`: SD 1.5 + LCM-LoRA (2.68 GB, chọn vì đo được so với
+6.46 GB của SDXL), chạy **native trên macOS** vì Docker không với được GPU Metal.
+`fetch_scenes.js` thử generator trước, không có thì rơi về Pexels rồi Openverse —
+nên quên bật service chỉ làm ảnh xấu đi, không làm hỏng run.
+
+**Phát hiện đắt giá nhất:** prompt cho máy tìm ảnh **không dùng được** cho máy vẽ
+ảnh. `"team standup meeting office whiteboard"` cho ra một bức tranh thảm Ba Tư,
+đổi seed vẫn hỏng. Viết thành câu thì đúng ngay. Groq giờ sinh cả `imageQuery`
+(stock) lẫn `imagePrompt` (một câu, cho máy vẽ).
+
+Đo thêm: `guidance` 1.0 nhanh **gấp đôi** 1.5 và đẹp hơn; 8 bước làm ảnh sụp thành
+mảng phẳng; style dài làm nhoè hết. Ảnh sinh ra gần như xám (SATAVG 5.1) và thêm
+từ khoá màu vô tác dụng — phải tăng bão hoà sau khi sinh.
+
+**Hai nhân vật anime cố định** (`assets/characters/A.png`, `B.png`) **do chính
+pipeline sinh ra** theo mỹ học Shinkai — không dùng nhân vật phim có bản quyền.
+Khoá bằng IP-Adapter `-plus-face` ở scale **0.40**: đo trên cùng prompt+seed,
+0.55 nuốt mất phong cảnh (nền trơn của ảnh tham chiếu bị kéo sang), 0.28 giữ cảnh
+nhưng tóc trôi khỏi tham chiếu, 0.40 giữ được cả hai. Speaker A/B của hội thoại quyết định cảnh
+đó vẽ ai, nên cả series có một bộ nhân vật nhất quán mà không cần nhập thêm gì.
+Thay nhân vật = thay hai file PNG. Cần thêm ~2.5 GB (image encoder 2.41 GB).
+Giống chứ không trùng khít — tóc/mắt/trang phục giữ được, mặt trôi nhẹ.
+
+**Model: Counterfeit V2.5** (anime, 1.99 GB, ~8s/ảnh). Đổi từ Realistic Vision
+sang vì mặt vẽ không có thung lũng kỳ lạ. Đánh đổi đã đo: bám prompt lỏng hơn, và
+**hỏng hẳn với cảnh nhóm** — nên Groq giờ phải viết "một nhân vật, một hành động".
+
+**Ghi chú cũ — Realistic Vision V6** (finetune ảnh thật của SD1.5, file fp16 1.99 GB).
+Đổi từ SD1.5 gốc sang nó không tốn thêm giây nào vì cùng kiến trúc — LCM-LoRA vẫn
+áp được, vẫn ~7.3s/ảnh. Đo trên cùng prompt+seed: bão hoà **5-8 → 18-28**, mặt
+người từ biến dạng thành bình thường.
+
+**Mặt người méo — đã chữa bằng prompt, không bằng tham số.** Bản đầu sinh ra năm
+khuôn mặt biến dạng mỗi cảnh. SD 1.5 vốn yếu ở mặt và tay, và không tổ hợp
+guidance/steps/style nào sửa được. Cách chữa là **cấm mặt chính diện ngay trong
+prompt**: `SYSTEM_PROMPT` buộc Groq tả đồ vật, không gian, bàn tay đang thao tác,
+hoặc người quay lưng. Chạy lại cùng chủ đề standup cho ra tường giấy nhớ sắc nét,
+tay gõ bàn phím, rack server — không còn gì để méo, và màu cũng rực hơn hẳn vì
+chủ thể vốn nhiều màu.
+
+Kèm theo hai chỗ dễ nhầm. Một: `NEGATIVE` prompt **vô tác dụng ở guidance 1.0**,
+vì diffusers chỉ mã hoá nó khi CFG bật. Hai: **phủ định trong prompt dương cũng vô
+tác dụng** — bắt Groq ghi "no faces visible" mà generator vẫn vẽ mặt. Thứ có hiệu
+quả là tả đồ vật thay vì tả người. Sau khi lên Realistic Vision thì luật này được
+nới, vì mặt đã vẽ tốt.
+
+**Giá:** +45-70s mỗi run (86s so với ~20s).
+
+<details>
+<summary>Mô tả hạn chế gốc</summary>
+
+#### Chất lượng ảnh sụt mạnh tuỳ chủ đề (khi chỉ có Openverse)
 
 Kho CC0 của Openverse lệch nặng về lưu trữ chính phủ, ảnh scan bảo tàng và dữ
 liệu khoa học. Nó **không** phải kho ảnh stock đời thường. Hệ quả đo được:
@@ -142,6 +199,8 @@ nhánh Pexels đã lắp sẵn và đã test đường degrade. Lấy key free t
 
 **Nếu vẫn muốn $0 tuyệt đối**: cân nhắc Stable Diffusion self-host (xem lại bảng
 so sánh ở mục A) — đổi lấy ~4GB model và 20-40s mỗi ảnh.
+
+</details>
 
 ---
 

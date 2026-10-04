@@ -114,8 +114,11 @@ const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
   // Falls back to the topic so a sentence without a usable query still gets a
   // scene rather than a hole in the video.
   const imageQuery = String(row.imageQuery ?? '').trim().slice(0, 80) || cfg.topic;
+  // Falls back to the keyword form, which is poor input for a generator but far
+  // better than nothing when the model omits the field.
+  const imagePrompt = String(row.imagePrompt ?? '').trim().slice(0, 200) || imageQuery;
 
-  return { idx: i + 1, speaker, en, vi, imageQuery, ttsText: normalizeForTts(en) };
+  return { idx: i + 1, speaker, en, vi, imageQuery, imagePrompt, ttsText: normalizeForTts(en) };
 });
 
 // Caption and hashtags for the TikTok post, generated in the same Groq call as
@@ -123,6 +126,8 @@ const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
 // fall back to something usable rather than throwing.
 const caption = String(parsed.caption ?? '').trim().slice(0, 300)
   || `Luyện nói tiếng Anh: ${cfg.topic}`;
+const coverPrompt = String(parsed.coverPrompt ?? '').trim().slice(0, 200)
+  || `${cfg.topic}, wide establishing shot, no people`;
 const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
   .map((t) => String(t).trim().replace(/^#+/, '').replace(/\s+/g, ''))
   .filter(Boolean)
@@ -133,7 +138,8 @@ const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
 // fetch_music.js reads `music` the way fetch_scenes.js reads `sentences`.
 fs.writeFileSync(
   cfg.manifestPath,
-  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music, caption, hashtags, sentences }, null, 2),
+  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music,
+    imageSource: cfg.imageSource, caption, hashtags, coverPrompt, sentences }, null, 2),
   'utf8',
 );
 

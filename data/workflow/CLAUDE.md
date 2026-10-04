@@ -17,6 +17,7 @@ viết code cho môi trường A rồi chạy ở môi trường B. Cây thư m�
 | `container/cli/` | Trong container n8n, gọi bởi Execute Command node | **Chỉ** `node` + `ffmpeg` + `ffprobe` + `sh` |
 | `container/nodes/` | Trong task runner của n8n, nội dung Code node | `node` + builtin trong `NODE_FUNCTION_ALLOW_BUILTIN` |
 | `infra/` | Không chạy — định nghĩa image | — |
+| `host/imagegen/` | macOS, **Python qua `uv`**, GPU Metal | torch + diffusers |
 
 ### ⛔ Ràng buộc của container (đọc kỹ trước khi viết `container/**`)
 
@@ -62,6 +63,9 @@ data/workflow/
 │   │   ├── config.js         ← đọc .env
 │   │   └── n8n.js            ← REST client + upsertWorkflow
 │   ├── tiktok-auth.js        ← OAuth một lần; uỷ quyền token cho container
+│   ├── imagegen/             ← ⚠ PYTHON, chạy NATIVE trên máy, KHÔNG trong compose
+│   │   ├── server.py         ← SD1.5 + LCM trên MPS, HTTP :7860
+│   │   └── run.sh
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
 │       ├── shadowing-stub.js
@@ -170,6 +174,11 @@ node host/inspect-execution.js 12   # một execution cụ thể
 
 node host/verify-sync.js            # audit drift phụ đề của run mới nhất
 node host/verify-sync.js <runId>    # exit code != 0 nếu lệch — dùng được làm cổng kiểm tra
+
+# sinh ảnh cảnh bằng model local (tuỳ chọn; không bật thì tự dùng ảnh stock)
+host/imagegen/run.sh &              # lần đầu tải ~5.7 GB, nạp model ~80s
+curl -s localhost:7860/health
+#   imageSource: auto (mặc định) | ai (bắt buộc có generator) | stock
 
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
@@ -326,7 +335,7 @@ thật) được thực thi.
 **`amix` mặc định `normalize=1`** — nó chia biên độ cho số input, tức là hạ giọng
 6 dB để nhường chỗ cho bed thấp hơn giọng 30 dB. Luôn viết `normalize=0`.
 
-**Bốn cái bẫy của ffmpeg đã cắn một lần.** Cả bốn đều **không báo lỗi**, chỉ cho ra
+**Sáu cái bẫy của ffmpeg đã cắn một lần.** Hầu hết đều **không báo lỗi**, chỉ cho ra
 video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạy:
 
 1. **`force_style` dùng *script unit* của ASS, không phải pixel.** SRT chuyển sang ASS
@@ -338,7 +347,15 @@ video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạ
    Muốn animate thì chia thành nhiều box width tĩnh + `enable='between(t,...)'`.
 3. **Trong nháy đơn của ffmpeg, đừng escape dấu phẩy bằng `\\,`.** Nháy đơn đã bỏ
    ý nghĩa phân tách rồi; thêm backslash làm expression fail lặng lẽ.
-4. **`drawtext` với `textfile` đo mỗi dòng bằng BYTE rồi vẽ ra bấy nhiêu KÝ TỰ.**
+4. **`text=` của `drawtext` đứt ở dấu hai chấm.** `text='0:39'` làm ffmpeg báo
+   `No option name near '39...'` và **từ chối cả filter graph**. Nháy đơn không cứu
+   được vì parser tách option trước. Luôn dùng `textfile=` — cũng là lý do mọi
+   chuỗi trong `renderCard()` đều đi qua `writeTextFile()`.
+5. **`drawbox` với `x=(w-N)/2` dán vào mép trái.** Đây là hệ quả cụ thể của bẫy #2
+   ở trên: geometry chỉ evaluate một lần lúc config, lúc đó `w` chưa có nên đọc ra
+   0, thành `(0-N)/2` âm và bị kẹp về 0. **Tính sẵn bằng JS** rồi đưa số vào. Đã
+   cắn một lần ở gạch nhấn của title card.
+6. **`drawtext` với `textfile` đo mỗi dòng bằng BYTE rồi vẽ ra bấy nhiêu KÝ TỰ.**
    Mỗi ký tự non-ASCII ăn mất một ký tự ở **cuối chính dòng đó**. `"… · 0:38"` ra
    `"… · 0:"`; tiêu đề tiếng Việt mất một chữ mỗi dòng. Cách chữa nằm ở
    `writeTextFile()` trong `build_video.js`: đệm mỗi dòng thêm một dấu cách cho mỗi
@@ -428,6 +445,148 @@ không gắn credential, vì phải tái hiện đúng thứ server của Buffer
 byte đầu, và đòi trong đó có `ftyp`. S3 trả lỗi bằng XML kèm HTTP 200 nên chỉ nhìn
 status là không đủ. Hỏng ở đây thì biết ngay, chứ không phải vài giờ sau trong
 hàng đợi Buffer nơi không có gì nói lý do.
+
+### Title card thương hiệu
+
+**Buffer không nhận ảnh bìa riêng.** Chỉ có `thumbnailOffset` — một mốc mili giây
+để lấy frame **từ chính video**. Tài liệu còn ghi rõ nếu gửi kèm URL thumbnail thì
+Buffer *nhận nhưng không áp dụng*. Nên muốn bìa có thương hiệu trên lưới profile,
+nó **bắt buộc phải nằm trong video**, không thể là file jpg riêng.
+
+Vì thế `build_video.js` đốt một thẻ 1.2s vào đầu video, và `coverTimestamp()` trỏ
+vào **giữa thẻ**. File `_cover.jpg` giờ chỉ là ảnh chụp lại đúng frame đó, nên bìa
+và video không thể nói hai điều khác nhau.
+
+**`introMs` là số nguyên mili giây, và đó là bắt buộc.** Ở 24 kHz, một mili giây
+đúng bằng 24 sample. Nhờ vậy khoảng lặng `adelay` chèn vào audio và độ dịch áp lên
+mọi cue phụ đề là **cùng một số sample nguyên**. Một giá trị lẻ sẽ làm hai bên
+lệch nhau vài sample — chính là thứ drift mà cả dự án này dựng lên để tránh.
+
+Quyết định ở **một chỗ duy nhất**: `01_prepare_run.js`. Từ đó chảy sang
+`03_build_srt.js` (dịch cue) và `build_video.js` (chèn im lặng). Sửa một bên mà
+quên bên kia thì toàn bộ phụ đề lệch đúng bằng độ dài thẻ.
+
+**`verify-sync.js` phải hạ ngưỡng `silencedetect` theo cái ngắn hơn giữa gap và
+thẻ.** Đo được: thẻ 1.2s với gap 2.5s thì ngưỡng cũ (gap × 0.6 = 1.5s) **đi lướt
+qua luôn khoảng mở đầu**, đếm thiếu một onset, và cả phép kiểm tự bỏ qua mà không
+ai để ý.
+
+Thẻ được đánh dấu `raw` trong scene chain nên **không bị làm tối và không bị phủ
+scrim** như ảnh cảnh — nó đã được thiết kế sẵn, dimming sẽ làm chết màu nhấn.
+
+### Sinh ảnh cảnh bằng SD 1.5 (chạy trên host)
+
+**Không thể đưa vào `docker-compose`.** Docker Desktop trên macOS không với được
+GPU Metal — đã kiểm `/dev` trong container, không có thiết bị GPU nào. Chạy trong
+container nghĩa là rơi về CPU, mỗi ảnh vài phút. Nên nó chạy **native trên máy** ở
+`:7860`, và container gọi sang bằng `host.docker.internal` (đã kiểm chứng phân
+giải được từ bên trong).
+
+Đây là ngoại lệ Python duy nhất của dự án. Mọi thứ khác vẫn là Node.
+
+**Ba con số đo được, đừng chỉnh mò lại:**
+
+| Tham số | Giá trị | Vì sao |
+|---|---|---|
+| `guidance` | **1.0** | Tắt CFG, đúng thứ LCM được chưng cất. Ở 1.5 ảnh bạc màu và **chậm gấp đôi** (14s so với 7s) vì CFG nhân đôi forward pass |
+| `steps` | **4** | LCM là sampler 4 bước, không phải thanh trượt. Ở 8 bước ảnh **sụp thành một mảng phẳng** |
+| style | 2 từ | Bản đầu thêm `shallow depth of field, 35mm, candid` và **mọi cảnh nhoè tới mức không nhận ra** — từ khoá style lấn át chủ thể ở 4 bước |
+
+**Cái bẫy lớn nhất: prompt cho máy tìm ảnh ≠ prompt cho máy vẽ ảnh.**
+
+`imageQuery` Groq sinh ra là từ khoá cho stock index — 2-4 danh từ rời. Đưa thẳng
+cho diffusion model thì hỏng: `"team standup meeting office whiteboard"` trả về
+**một bức tranh thảm Ba Tư**, và đổi seed vẫn hỏng. Viết lại thành câu tả cảnh —
+`"colleagues standing around a whiteboard in a bright modern office"` — thì ra
+đúng ngay. Nên prompt giờ xin Groq **hai trường**: `imageQuery` cho stock,
+`imagePrompt` (một câu) cho máy vẽ.
+
+**Hai nhân vật cố định, khoá bằng IP-Adapter.** Mỗi video dùng đúng hai nhân vật
+anime trong `assets/characters/A.png` và `B.png`. Hội thoại vốn đã luân phiên
+speaker A/B, nên `fetch_scenes.js` gửi kèm `character: sentence.speaker` và server
+nạp đúng chân dung đó làm tham chiếu. Bộ nhân vật đồng nhất, miễn phí, không cần
+thêm dữ liệu nào.
+
+- Dùng bản **`-plus-face`**: bản thường copy cả bố cục ảnh gốc, cho ra sáu bức
+  chân dung giống hệt nhau thay vì sáu cảnh khác nhau.
+- `IP_SCALE` **0.55**. Cao hơn thì mọi cảnh co lại thành chân dung, mất bối cảnh
+  mà câu thoại đang nói tới.
+- Nạp **sau** `fuse_lora()`, không phải trước.
+- ⚠ **Giống, không phải trùng khít.** Tóc, mắt, trang phục giữ được qua các cảnh;
+  khuôn mặt trôi nhẹ, và tóc nhân vật nam ngả tím so với xanh navy của ảnh gốc.
+  Muốn khoá tuyệt đối thì phải train LoRA riêng cho nhân vật — việc khác hẳn.
+- Thay nhân vật = thay hai file PNG đó, không đụng code. Bản trước nằm ở
+  `assets/characters/previous/`.
+- **Hai nhân vật hiện tại do chính pipeline sinh ra**, không lấy từ phim nào. Đã
+  cân nhắc dùng nhân vật Your Name và bỏ: đó là IP của CoMix Wave Films, dùng làm
+  dàn nhân vật cố định cho kênh công khai là rủi ro gỡ video, và nó buộc bản sắc
+  kênh phụ thuộc vào tài sản của người khác. Sinh nhân vật gốc theo cùng mỹ học
+  cho kết quả tương đương mà bạn sở hữu hoàn toàn.
+- **Sinh nhân vật mới**: gọi `/generate` **không truyền `character`**. Nhớ là một
+  khi IP-Adapter đã nạp thì UNet luôn đòi `image_embeds`, nên server tự đưa ảnh
+  trắng với scale 0 — thiếu cái đó là vỡ với
+  `argument of type 'NoneType' is not iterable`.
+
+**Model là Counterfeit V2.5 (anime), không phải Realistic Vision.** Đổi vì series
+dùng nhân vật anime cố định, mà mặt vẽ thì không có thung lũng kỳ lạ để rơi vào.
+Đánh đổi đã đo: model này **bám prompt lỏng hơn rõ rệt** — "server rack with a red
+warning light" ra một hành lang đỏ, và cảnh nhóm không có nhân vật trung tâm ra
+một lưới phác thảo vô nghĩa. Nó muốn **một nhân vật làm một việc**, nên
+`SYSTEM_PROMPT` giờ bắt Groq viết đúng dạng đó.
+
+Đổi model bằng `IMAGEGEN_MODEL`. Bản ảnh thật trước đó là
+`SG161222/Realistic_Vision_V6.0_B1_noVAE`, file `..._NV_B1_fp16.safetensors`.
+
+**Prompt không bẻ được phong cách.** Đã thử ép `anime illustration` và
+`flat vector illustration` lên model ảnh thật: ra nửa nạc nửa mỡ, vẫn kết cấu ảnh
+chụp và mặt vẫn gượng. Phong cách nằm ở trọng số, không nằm ở prompt.
+
+**Ghi chú cũ về Realistic Vision V6 (vẫn đúng nếu quay lại dùng nó):** Cùng kiến trúc nên LCM-LoRA
+của SD1.5 vẫn áp được và tốc độ không đổi (~7.3s), nhưng ảnh ra là ảnh thật.
+Đo bằng `signalstats` trên cùng prompt và seed: bão hoà **5-8 → 18-28**, và mặt
+người từ chỗ biến dạng thành bình thường.
+
+Tải bằng **`from_single_file`** trỏ vào file fp16 **1.99 GB**, không phải
+`from_pretrained` — thư mục diffusers của repo đó là `.bin` fp32 cộng safety
+checker, khoảng **5 GB cho cùng bộ trọng số**.
+
+⚠ **Tên repo có chữ `noVAE` không phải trang trí** — checkpoint không kèm VAE, phải
+nạp riêng `stabilityai/sd-vae-ft-mse`, nếu không decoder cho ra màu loang.
+
+**Đừng viết phủ định vào prompt dương.** Bản trước bắt Groq ghi `"no faces visible"`
+và generator **vẫn vẽ mặt** — diffusion model đọc prompt dương như một túi thứ cần
+có, nên phủ định trong đó bị bỏ qua, thậm chí phản tác dụng. Cái thật sự có hiệu
+quả lúc đó là Groq chuyển sang tả **đồ vật** thay vì tả người. Giờ luật được viết
+lại thành *nên tả gì* (bối cảnh, đồ vật, bàn tay đang thao tác) chứ không phải
+*cấm gì*.
+
+**Nền của title card là ảnh sinh riêng, không phải cảnh số 1.** Groq trả thêm
+`coverPrompt` — một cảnh toàn của bối cảnh, **không có người** — và
+`fetch_scenes.js` sinh nó thành `cover_bg.jpg` với `character` bỏ trống nên
+IP-Adapter về 0. Dùng lại cảnh số 1 thì có một nhân vật đứng đúng chỗ đặt tiêu đề.
+
+Ảnh nền phải bị dìm **hai tầng** trước khi đặt chữ: `eq` rút sáng và màu, rồi một
+lớp phủ toàn khung màu nền thương hiệu. Chỉ một tầng thì tiêu đề đánh nhau với
+bất cứ thứ gì ngẫu nhiên nằm phía sau. Kèm `borderw` cho mọi dòng chữ trên thẻ —
+nền giờ là ảnh, chữ trắng cắt ngang một ô cửa sổ sáng sẽ mất viền đúng chỗ cần rõ
+nhất. Có viền rồi mới dám để nền sáng đủ để nhìn thấy.
+
+⚠ **`NEGATIVE` trong `server.py` là đồ trang trí ở guidance 1.0.** diffusers chỉ mã
+hoá negative prompt khi CFG bật, tức `guidance_scale > 1.0`. Mặc định là 1.0 nên
+**không một từ nào trong đó có tác dụng**. Đừng thêm từ vào đó rồi tưởng đã sửa được
+gì — mọi thứ điều khiển được đều nằm ở prompt dương.
+
+**Ảnh sinh ra gần như xám.** Đo bằng `signalstats`: SATAVG 5.1/255. Thêm
+`vivid saturated colours` vào prompt đẩy lên 5.14 — vô dụng. Cách có tác dụng là
+tăng bão hoà **sau khi sinh** bằng PIL (5.1 → 8.0). Làm ở server chứ không ở
+`build_video.js`, vì chỉ ảnh sinh mới cần; ảnh stock đã đủ màu, tăng nữa thì loè.
+
+**Giá phải trả:** ~7s mỗi ảnh trên M2, tức **+45-70s mỗi run**. Run đo được 86s so
+với ~20s khi dùng ảnh stock.
+
+**Một GPU thì sinh tuần tự.** `fetch_scenes.js` hạ `MAX_PARALLEL` xuống 1 khi
+generator bật — chạy song song chỉ xếp hàng chờ nhau trong khi nhân đôi bộ nhớ
+đỉnh, và 16GB thì đó là đường dẫn tới swap chứ không phải tới tốc độ.
 
 ### Gọi API ảnh bên ngoài
 

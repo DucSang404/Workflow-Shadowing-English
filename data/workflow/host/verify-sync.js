@@ -51,7 +51,14 @@ if (cues.length !== record.segments.length) {
 
 const musicOn = record.music?.used === true;
 
+// The branded title card sits in front of everything, so cue 1 no longer starts
+// at zero. Both the SRT and the audio were shifted by exactly this, and if the
+// two ever disagreed the whole video would be out by the length of the card -
+// precisely the failure this script exists to catch.
+const introSec = Number(record.introSec ?? 0);
+
 console.log(`run ${runId} — "${record.topic}"  gap=${record.gapSeconds}s  cues=${cues.length}`
+  + (introSec ? `  intro=${introSec}s` : '  intro=off')
   + (musicOn ? `  music=${record.music.db}dB (${record.music.source})` : '  music=off'));
 
 // A music bed is mixed under the speech before the video is encoded, and the one
@@ -63,7 +70,7 @@ const audio = record.audio ?? {};
 const samplesKnown = Number.isFinite(audio.voiceSamples) && Number.isFinite(audio.finalSamples);
 const badSamples = samplesKnown && audio.voiceSamples !== audio.finalSamples;
 
-let cursor = 0;
+let cursor = introSec;
 let worstMs = 0;
 record.segments.forEach((seg, i) => {
   const driftMs = Math.abs(cues[i].start - cursor) * 1000;
@@ -118,16 +125,24 @@ function speechOnsets(file, minSilence, duration) {
   // reports that as a silence_end at EOF - which is not a sentence starting.
   const real = ends.filter((t) => t < duration - 0.25);
 
-  const opensOnSpeech = !starts.length || starts[0] > 0.2;
+  // With a title card the file OPENS on silence by design, so the old "starts at
+  // zero unless it opens quiet" rule would throw away the first real onset.
+  const opensOnSpeech = introSec ? false : (!starts.length || starts[0] > 0.2);
   return opensOnSpeech ? [0, ...real] : real;
 }
 
 let worstOnsetMs = null;
 const primary = results[0];
 if (primary) {
-  // Look for silences a little shorter than the gap, so the detector still fires
-  // if a sentence ends on a soft trailing consonant.
-  const onsets = speechOnsets(primary.path, Math.max(0.4, record.gapSeconds * 0.6), primary.actual);
+  // Look for silences a little shorter than the shortest one we expect, so the
+  // detector still fires if a sentence ends on a soft trailing consonant.
+  //
+  // The title card matters here: it is usually SHORTER than a shadowing gap, and
+  // a threshold set from the gap alone sails straight past it - the opening
+  // onset goes missing, the count comes up one short and the whole check quietly
+  // skips itself. Measured: a 1.2s card against a 2.5s gap did exactly that.
+  const shortest = Math.min(record.gapSeconds, introSec || record.gapSeconds);
+  const onsets = speechOnsets(primary.path, Math.max(0.4, shortest * 0.6), primary.actual);
   if (onsets.length === cues.length) {
     worstOnsetMs = Math.max(...cues.map((c, i) => Math.abs(onsets[i] - c.start) * 1000));
   } else if (musicOn) {

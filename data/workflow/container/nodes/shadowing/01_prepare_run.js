@@ -101,6 +101,37 @@ return [{
       // as near-silence on a phone speaker.
       db: clamp(body.musicDb, -60, -6, -24),
     },
+    // Where scene pictures come from.
+    //   auto  -> generate locally if the service answers, else stock photos
+    //   ai    -> generate only; a run with the service down gets no pictures
+    //   stock -> Pexels then Openverse, as before
+    // `auto` is the default so forgetting to start the generator costs picture
+    // quality, never a failed run.
+    imageSource: ['auto', 'ai', 'stock'].includes(String(body.imageSource ?? '').toLowerCase())
+      ? String(body.imageSource).toLowerCase()
+      : 'auto',
+
+    // The branded title card burned onto the front of the video.
+    //
+    // It has to be IN the video, not a separate jpg: Buffer can only pick a
+    // thumbnail with `thumbnailOffset`, a millisecond offset into the video
+    // itself. Its docs are explicit that a thumbnail URL in the payload "is not
+    // applied when publishing", so a cover image file would never reach TikTok.
+    //
+    // `introMs` is whole milliseconds on purpose. At 24 kHz every millisecond is
+    // exactly 24 samples, so the silence prepended to the audio and the shift
+    // applied to every subtitle cue are the same integer number of samples. A
+    // fractional intro would put the two a sample or two apart and start the
+    // drift this pipeline exists to prevent.
+    intro: body.intro !== false,
+    introMs: Math.round(clamp(body.introMs, 600, 5000, 1200)),
+    brand: {
+      name: String(body.brandName ?? 'ShawnSpace English'),
+      // Warm amber on near-black: the highest-contrast pairing that still looks
+      // deliberate, and it reads at the size a profile grid actually shows.
+      accent: String(body.brandAccent ?? '#F5B544'),
+      kicker: String(body.brandKicker ?? 'shadowing practice'),
+    },
     // The TikTok cover. Off by request only - it costs one extra frame decode.
     thumbnail: body.thumbnail !== false,
     // Where to freeze. Left null, build_video.js picks a point inside the first

@@ -45,6 +45,10 @@ try {
     topic: cfg.topic,
     createdAt: new Date().toISOString(),
     gapSeconds: cfg.gapSeconds,
+    // The title card shifts every cue by this much; host/verify-sync.js needs it
+    // to know where cue 1 is supposed to start.
+    introSec: srt.introSec ?? 0,
+    brand: cfg.brand,
     voices: { A: cfg.voiceA, B: cfg.voiceB },
     speed: cfg.speed,
     orientation: cfg.orientation,

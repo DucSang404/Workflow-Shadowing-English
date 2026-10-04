@@ -22,8 +22,9 @@ const nodeCode = (file) =>
 const SYSTEM_PROMPT = [
   'You write short, natural English conversations for listening-and-shadowing practice.',
   'Return ONLY a JSON object of this shape:',
-  '{"caption":"<TikTok caption>","hashtags":["tag","tag"],'
-  + '"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>","imageQuery":"<2-4 word stock photo search>"}]}',
+  '{"caption":"<TikTok caption>","hashtags":["tag","tag"],"coverPrompt":"<establishing shot>",'
+  + '"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>",'
+  + '"imageQuery":"<2-4 word stock photo search>","imagePrompt":"<one descriptive sentence>"}]}',
   'Rules:',
   // Asked for in the same call as the dialogue rather than a second one: the Groq
   // free tier caps output tokens per minute, and a caption is ~40 of them against
@@ -43,6 +44,38 @@ const SYSTEM_PROMPT = [
   '- `imageQuery` is what a stock photo library is searched for to illustrate that line.',
   '  Concrete, photographable nouns only - "hotel reception desk", "handing over credit card".',
   '  Never abstract ideas, never names, never words like "conversation" or "person talking".',
+  // Two fields for two different consumers. A stock photo index wants keywords;
+  // a diffusion model wants a sentence. Measured: the keyword form
+  // "team standup meeting office whiteboard" produced an unrelated image at two
+  // different seeds, while "colleagues standing around a whiteboard in a bright
+  // modern office" produced exactly the scene asked for.
+  '- `imagePrompt` describes the SAME scene as one plain English sentence, the way',
+  '  you would describe a photograph to someone who cannot see it. 10 to 20 words.',
+  '  No camera jargon.',
+  // Phrased as what TO show, never as what to avoid: a diffusion model reads the
+  // positive prompt as a bag of things to include, so a negation in it is at
+  // best ignored and at worst a summons. An earlier version said "NO visible
+  // human face" and the generator drew a face anyway.
+  //
+  // ONE character, because the pictures are drawn by an anime model that wants a
+  // single clear subject. Measured: a group scene with no focal person came back
+  // as a grid of meaningless sketches. The speaker of the line is rendered as one
+  // of two recurring characters, conditioned on a reference portrait, so the
+  // sentence only has to say WHAT they are doing and WHERE.
+  // Backdrop for the title card. Deliberately empty of people: the channel name
+  // and the topic are printed across the middle of it, and a figure behind that
+  // text fights with it.
+  '- `coverPrompt` is ONE establishing shot of the place this conversation happens',
+  '  in, with NOBODY in it. Wide view, the setting itself. 10 to 18 words.',
+  '  Example: "An empty train platform at golden hour, long shadows on the tiles".',
+  '- `imagePrompt` shows exactly ONE person - the speaker of that line - doing',
+  '  something concrete, and then describes the PLACE around them in real detail.',
+  '  Start with "A girl" when speaker is A, or "A boy" when speaker is B.',
+  '  Spend most of the sentence on the setting: the room or street, the time of',
+  '  day, the light, the weather. The person is IN the scene, not filling it.',
+  '  Example: "A girl waiting at a quiet train platform at dusk, orange sky,',
+  '  empty tracks stretching away".',
+  '  Never a group, never a crowd, never a posed headshot, never a close-up face.',
 ].join('\n');
 
 // Groq has retired llama-3.3-70b-versatile; gpt-oss-120b is the closest equivalent
