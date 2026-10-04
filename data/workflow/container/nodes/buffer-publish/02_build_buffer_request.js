@@ -63,9 +63,18 @@ const text = cfg.caption || `Luyen noi tieng Anh - ${cfg.topic ?? ''}`.trim();
 // this needs nothing.
 const str = (v) => JSON.stringify(String(v ?? ''));
 
+// `schedulingType` is required on EVERY post, not only the queued ones. Leaving
+// it off a scheduled post returns GRAPHQL_VALIDATION_FAILED with
+// "Field CreatePostInput.schedulingType of required type SchedulingType! was not
+// provided" - which cost a whole scheduled run to discover, because the video
+// built fine and only the publish failed.
+//
+// It is also not the field that sets the time: the enum is automatic (Buffer
+// posts it) or notification (Buffer only reminds you). `mode` plus `dueAt` are
+// what place the post at an exact moment.
 const scheduling = cfg.dueAt
-  ? `mode: customScheduled\n      dueAt: ${str(cfg.dueAt)}`
-  : 'mode: addToQueue\n      schedulingType: automatic';
+  ? `schedulingType: automatic\n      mode: customScheduled\n      dueAt: ${str(cfg.dueAt)}`
+  : 'schedulingType: automatic\n      mode: addToQueue';
 
 const thumb = cfg.thumbnailOffsetMs === null ? '' : `
             metadata: { thumbnailOffset: ${cfg.thumbnailOffsetMs} }`;

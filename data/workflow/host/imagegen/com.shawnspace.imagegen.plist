@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keeps the scene generator running so the 18:00 build always has it.
+
+  Install:
+    cp host/imagegen/com.shawnspace.imagegen.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+
+  Without this the generator has to be started by hand after every reboot, and a
+  scheduled run that finds it missing quietly falls back to stock photos - the
+  video still ships, but the two recurring characters vanish from it.
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.shawnspace.imagegen</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>exec /Users/sangnguyen/Projects/ad-test/data/workflow/host/imagegen/run.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/imagegen.log</string>
+  <key>StandardErrorPath</key><string>/tmp/imagegen.log</string>
+</dict></plist>

@@ -190,6 +190,41 @@ curl -X POST http://localhost:5678/webhook/shadowing \
   -d '{"topic":"asking for directions","sentenceCount":6,"gapSeconds":3}'
 ```
 
+### Chạy tự động mỗi ngày
+
+Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **18:00** và hẹn Buffer
+đăng lúc **19:00** cùng ngày, múi giờ `Asia/Ho_Chi_Minh`. Nó gọi lại chính hai
+webhook `shadowing` và `buffer-publish` chứ không nhân bản node của chúng — hai
+endpoint đó là thứ đã được bấm tay suốt quá trình, một đường chạy khác sẽ là thêm
+một thứ nữa phải tin. Một tiếng dự phòng giữa dựng và đăng là có chủ ý: dựng mất
+~100s khi mọi thứ ngoan, nhưng nó phải với tới Groq, model ảnh và S3.
+
+**Chủ đề lấy từ `topics.json`, chọn theo *ít dùng gần đây nhất*** — không phải
+ngẫu nhiên, vì ngẫu nhiên lặp lại sớm hơn người ta tưởng nhiều. Danh sách tự xoay
+vòng và sửa lúc nào cũng được; `history` do workflow ghi, đừng sửa tay.
+
+⚠ **`schedulingType` bắt buộc trên MỌI post Buffer, kể cả post hẹn giờ.** Thiếu nó
+là `GRAPHQL_VALIDATION_FAILED`. Và nó **không** phải thứ đặt giờ — enum chỉ có
+`automatic` (Buffer đăng) và `notification` (Buffer chỉ nhắc); giờ do `mode:
+customScheduled` + `dueAt` quyết định. Lỗi này ngốn nguyên một lần chạy lịch mới
+lộ, vì video dựng xong hoàn hảo và chỉ khâu đăng chết.
+
+⚠ **Máy ngủ thì lịch không chạy.** n8n sống trong Docker trên máy bạn; macOS ngủ
+là container dừng:
+
+```bash
+caffeinate -s                                      # giữ thức, chạy trong 1 terminal
+sudo pmset repeat wakeorpoweron MTWRFSU 17:55:00   # hoặc tự thức trước 18:00
+```
+
+**Generator ảnh cũng phải chạy lúc 18:00**, không thì ảnh rơi về Pexels/Openverse
+và mất hai nhân vật — video vẫn ra, chỉ mất bản sắc. Có sẵn LaunchAgent:
+
+```bash
+cp host/imagegen/com.shawnspace.imagegen.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+```
+
 ### TikTok
 
 App phải đăng ký **platform Desktop** trong Login Kit, redirect

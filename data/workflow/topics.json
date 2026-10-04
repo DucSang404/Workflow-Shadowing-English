@@ -1,0 +1,46 @@
+{
+  "_comment": "Topic pool for the daily run. The scheduler picks the one used longest ago, so the list cycles by itself and you can add to it any time. `history` is written by the workflow - leave it alone.",
+  "pool": [
+    "ordering breakfast at a small cafe",
+    "asking for directions to the train station",
+    "buying a ticket at the train station",
+    "checking in at a hotel",
+    "returning a book at the library",
+    "ordering a coffee to take away",
+    "asking a shop assistant for a different size",
+    "paying at a convenience store",
+    "asking a neighbour about the rubbish collection day",
+    "booking a table at a restaurant",
+    "asking a pharmacist about a cold remedy",
+    "reporting a lost umbrella at a station office",
+    "asking about the wifi password at a cafe",
+    "buying fruit at a market stall",
+    "asking a taxi driver to stop at the corner",
+    "cancelling a dentist appointment on the phone",
+    "asking a landlord about a leaking tap",
+    "signing up for a gym membership",
+    "collecting a parcel from the post office",
+    "asking a waiter what is in a dish",
+    "renting a bicycle for the afternoon",
+    "asking a receptionist where the lift is",
+    "complaining politely about a cold meal",
+    "asking a classmate to borrow a pen",
+    "checking the departure time at an airport desk",
+    "ordering a haircut at a barber shop",
+    "asking a stranger to take a photo",
+    "buying a sim card for a phone",
+    "asking about opening hours at a museum",
+    "returning a shirt that does not fit"
+  ],
+  "history": [
+    {
+      "topic": "ordering breakfast at a small cafe",
+      "runId": "20261004085530_wjr8mv",
+      "at": "2026-10-04T08:57:19.370Z",
+      "postsAt": "2026-10-04T12:00:00.000Z",
+      "published": true,
+      "postId": "6ac2153bad7fd83bc5185d0d",
+      "error": null
+    }
+  ]
+}

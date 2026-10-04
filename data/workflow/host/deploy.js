@@ -20,6 +20,7 @@ const REGISTRY = {
   'shadowing-stub': require('./workflows/shadowing-stub'),
   'tiktok-publish': require('./workflows/tiktok-publish'),
   'buffer-publish': require('./workflows/buffer-publish'),
+  daily: require('./workflows/daily'),
 };
 
 (async () => {
@@ -61,7 +62,7 @@ const REGISTRY = {
       id: saved.id,
       nodes: saved.nodes.length,
       active: activate,
-      webhook: `http://localhost:5678/webhook/${def.webhookPath}`,
+      webhook: def.webhookPath ? `http://localhost:5678/webhook/${def.webhookPath}` : '(schedule only)',
     });
   }
 
