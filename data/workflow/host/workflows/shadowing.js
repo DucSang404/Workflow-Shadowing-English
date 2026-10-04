@@ -22,8 +22,17 @@ const nodeCode = (file) =>
 const SYSTEM_PROMPT = [
   'You write short, natural English conversations for listening-and-shadowing practice.',
   'Return ONLY a JSON object of this shape:',
-  '{"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>","imageQuery":"<2-4 word stock photo search>"}]}',
+  '{"caption":"<TikTok caption>","hashtags":["tag","tag"],'
+  + '"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>","imageQuery":"<2-4 word stock photo search>"}]}',
   'Rules:',
+  // Asked for in the same call as the dialogue rather than a second one: the Groq
+  // free tier caps output tokens per minute, and a caption is ~40 of them against
+  // a whole extra request.
+  '- `caption` is for a TikTok post aimed at Vietnamese learners of English.',
+  '  Vietnamese, under 150 characters, one concrete hook about the situation.',
+  '  No hashtags inside it, no emoji spam, at most one emoji.',
+  '- `hashtags` is 5 to 8 tags, no `#`, lowercase, no spaces. Mix Vietnamese and',
+  '  English learner tags with two or three specific to the topic.',
   '- Everyday spoken register, the kind of thing people actually say. No textbook stiffness.',
   '- The lines must form ONE coherent two-person exchange on the given topic, in order.',
   '- `speaker` is "A" or "B" and must alternate as the turns alternate, starting at "A".',

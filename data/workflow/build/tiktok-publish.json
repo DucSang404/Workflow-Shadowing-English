@@ -1,0 +1,141 @@
+{
+  "name": "TikTok Publish (inbox draft)",
+  "slug": "tiktok-publish",
+  "webhookPath": "tiktok-publish",
+  "nodes": [
+    {
+      "id": "tk-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -420,
+        0
+      ],
+      "webhookId": "c2f8a1b4-6d93-4e27-bf15-70a3c9d2e481",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tiktok-publish",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "tk-resolve",
+      "name": "Resolve Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Works out which file to send and refuses the ones that should not go.\n//\n// The refusals matter more than usual here: TikTok allows only about five\n// pending inbox drafts per 24 hours, so a draft spent on the wrong file is a\n// draft you cannot get back for a day.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\nconst OUTPUT = `${ROOT}/output`;\n\nconst raw = $input.first().json;\nconst body = raw.body ?? raw ?? {};\n\nconst runId = String(body.runId ?? '').trim();\nconst explicit = String(body.video ?? '').trim();\nconst allowLandscape = body.allowLandscape === true;\nconst dryRun = body.dryRun === true;\n\n// Error text here carries no colons on purpose. n8n truncates a Code node's error\n// message at its LAST colon, so \"x is not 9:16, rebuild it\" reaches the caller as\n// \"16, rebuild it\" - the half that does not say what went wrong.\nif (!runId && !explicit) {\n  throw new Error('request body needs runId or video - e.g. runId = 20261003154722_0aim82');\n}\nif (runId && !/^[0-9]{14}_[a-z0-9]{6}$/.test(runId)) {\n  throw new Error(`runId does not look like a run id - ${runId}`);\n}\n\n// Portrait first: it is what TikTok is for, and a run that made both wrote the\n// 9:16 file under the _portrait suffix.\nfunction resolveVideo() {\n  if (explicit) {\n    if (!explicit.startsWith(`${OUTPUT}/`)) {\n      throw new Error(`video must be a path under ${OUTPUT}`);\n    }\n    if (!fs.existsSync(explicit)) throw new Error(`no such video - ${explicit}`);\n    return explicit;\n  }\n  const candidates = [`${OUTPUT}/${runId}_portrait.mp4`, `${OUTPUT}/${runId}.mp4`];\n  const found = candidates.find((f) => fs.existsSync(f));\n  if (!found) throw new Error(`no video for run ${runId} — looked for ${candidates.join(' and ')}`);\n  return found;\n}\n\nconst videoPath = resolveVideo();\n\n// The run record knows the real frame size, which beats guessing from the name.\nlet record = null;\nconst recordPath = `${OUTPUT}/${(runId || '')}.json`;\nif (runId && fs.existsSync(recordPath)) {\n  try {\n    record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));\n  } catch (err) {\n    console.log(`[tiktok] run ${runId}: unreadable record (${err.message})`);\n  }\n}\n\nconst shape = (record?.outputs ?? []).find((o) => o.path === videoPath);\nif (shape && shape.height <= shape.width && !allowLandscape) {\n  throw new Error(\n    `${videoPath} is ${shape.width}x${shape.height}, which is not vertical. TikTok allows about `\n    + '5 pending drafts per 24h, so this refuses rather than spend one on a letterboxed '\n    + 'upload. Rebuild the run with orientation = portrait, or resend with '\n    + 'allowLandscape = true.',\n  );\n}\n\n// Written by the shadowing run for pasting into the app — the inbox-draft route\n// cannot carry it over the wire.\nconst captionPath = runId ? `${OUTPUT}/${runId}_caption.txt` : '';\nlet caption = '';\nif (captionPath && fs.existsSync(captionPath)) {\n  caption = fs.readFileSync(captionPath, 'utf8').trim();\n}\n\n// Everything the CLI and the reply need goes into one plan file, the same\n// contract build_video.js works to.\n//\n// Not passed through n8n item data: this node has a second output for its own\n// refusals, and once a node branches, `$('Resolve Video')` no longer resolves\n// from downstream — it returns undefined and the response node dies on a\n// property read. A file sidesteps the expression system entirely, and it is what\n// the rest of this project already does for anything a CLI step needs.\nconst planPath = `${ROOT}/work/tiktok_${runId || 'adhoc'}.json`;\nconst plan = {\n  runId: runId || null,\n  videoPath,\n  sizeBytes: fs.statSync(videoPath).size,\n  width: shape?.width ?? null,\n  height: shape?.height ?? null,\n  topic: record?.topic ?? null,\n  cover: (record?.covers ?? [])[0]?.path ?? null,\n  caption,\n  captionPath: caption ? captionPath : null,\n  dryRun,\n};\n\nfs.mkdirSync(`${ROOT}/work`, { recursive: true });\nfs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf8');\n\nreturn [{ json: { planPath, ...plan } }];\n"
+      }
+    },
+    {
+      "id": "tk-upload",
+      "name": "Upload To TikTok",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        20,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "executeOnce": true,
+        "command": "=node /data/workflow/container/cli/tiktok_publish.js '{{ $json.planPath }}'"
+      }
+    },
+    {
+      "id": "tk-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shapes the webhook reply. The upload node is set to continue on error so that\n// a TikTok refusal comes back as a readable answer instead of a red node — the\n// caller needs to know *which* step failed, since a failed init costs nothing\n// but a failed poll may still have consumed a draft slot.\nconst node = $input.first().json;\n\n// Two different failures arrive on this one input, and they must not be confused:\n// Resolve Video's error output is wired straight here, and Upload To TikTok is set\n// to continue on error, which passes its INPUT through with an `error` bolted on.\n//\n// Presence of `stdout` is what tells them apart. tiktok_publish.js reports its own\n// failures as JSON on stdout and exits 0 precisely so that it always produces one;\n// an item with no stdout therefore never got as far as the upload.\nif (node.stdout === undefined) {\n  const message = node.error?.message ?? node.error ?? `exit code ${node.exitCode ?? '?'}`;\n  return [{ json: { ok: false, stage: 'resolve', error: String(message).slice(0, 400) } }];\n}\n\n// tiktok_publish.js echoes the plan back, so nothing here has to reach across\n// nodes for it.\nconst r = JSON.parse(node.stdout);\n\nif (r.ok === false) {\n  return [{ json: { ok: false, stage: 'upload', runId: r.runId ?? null, error: r.error, hint: r.hint ?? null } }];\n}\n\nreturn [{\n  json: {\n    ok: r.ok === true,\n    stage: 'upload',\n    runId: r.runId ?? null,\n    topic: r.topic ?? null,\n    video: r.file,\n    sizeBytes: r.sizeBytes,\n    frame: r.width ? `${r.width}x${r.height}` : null,\n    cover: r.cover ?? null,\n    dryRun: r.dryRun === true,\n    publishId: r.publishId ?? null,\n    status: r.status ?? null,\n    failReason: r.failReason ?? null,\n    chunks: { size: r.chunkSize, count: r.totalChunkCount },\n    tokenRefreshed: r.tokenRefreshed ?? null,\n    // The step the API cannot do for you.\n    caption: r.caption || null,\n    captionFile: r.captionPath ?? null,\n    nextStep: r.nextStep ?? null,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "tk-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Resolve Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Video": {
+      "main": [
+        [
+          {
+            "node": "Upload To TikTok",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload To TikTok": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Ho_Chi_Minh"
+  }
+}

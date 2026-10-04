@@ -14,9 +14,13 @@ const FORMATS = {
 const raw = $input.first().json;
 const body = raw.body ?? raw ?? {};
 
+// n8n truncates a Code node's error message at its LAST colon, so anything before
+// one never reaches the caller. Hence ` - ` instead of `: ` throughout, and the
+// colon-stripping in `brief()` - a raw JSON dump is full of colons and would eat
+// the sentence explaining it.
 const topic = String(body.topic ?? '').trim();
 if (!topic) {
-  throw new Error('`topic` is required — POST e.g. {"topic":"ordering coffee"}');
+  throw new Error('topic is required - POST e.g. topic = ordering coffee');
 }
 if (topic.length > 120) {
   throw new Error('`topic` must be 120 characters or fewer');

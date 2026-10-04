@@ -11,6 +11,10 @@
 const { definition: real } = require('./shadowing');
 
 const CANNED = {
+  // Shaped exactly like the real completion, caption and hashtags included, so the
+  // stub exercises the TikTok caption path rather than falling back past it.
+  caption: 'Gọi một ly latte đá bằng tiếng Anh, 6 câu là xong ☕',
+  hashtags: ['hoctienganh', 'shadowing', 'tienganhgiaotiep', 'coffee', 'learnenglish', 'cafe'],
   sentences: [
     { speaker: 'A', en: 'Hi there, could I get a large iced latte, please?', vi: 'Chào bạn, cho tôi một ly latte đá lớn nhé?', imageQuery: 'iced latte cup' },
     { speaker: 'B', en: 'Sure thing. Would you like any syrup with that?', vi: 'Được thôi. Bạn có muốn thêm siro không?', imageQuery: 'coffee syrup bottles' },

@@ -1,6 +1,13 @@
 # secrets
 .env
 
+# TikTok app credentials + the rotating OAuth tokens. chmod 600.
+# See CLAUDE.md, "Secrets" — this is a deliberate exception to the
+# keys-live-only-in-n8n rule, and the reason is written down there.
+secrets/*
+# but keep the fill-in-the-blanks template in git
+!secrets/tiktok.example.json
+
 # n8n's own database volume
 n8n_data/
 

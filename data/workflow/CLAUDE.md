@@ -61,27 +61,46 @@ data/workflow/
 │   ├── lib/
 │   │   ├── config.js         ← đọc .env
 │   │   └── n8n.js            ← REST client + upsertWorkflow
+│   ├── tiktok-auth.js        ← OAuth một lần; uỷ quyền token cho container
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
-│       └── shadowing-stub.js
+│       ├── shadowing-stub.js
+│       ├── tiktok-publish.js  ← đường trực tiếp, chỉ bỏ draft vào hộp thư
+│       └── buffer-publish.js  ← đường đang dùng, đăng công khai
 │
 ├── container/                ← chạy trong container n8n
 │   ├── cli/                  ← gọi bởi Execute Command node
 │   │   ├── probe_durations.js
 │   │   ├── fetch_scenes.js
 │   │   ├── fetch_music.js
-│   │   └── build_video.js
+│   │   ├── build_video.js
+│   │   ├── tiktok_token.js   ← CHỦ SỞ HỮU DUY NHẤT của vòng đời OAuth token
+│   │   └── tiktok_publish.js
 │   └── nodes/                ← nội dung Code node, nhóm theo workflow
-│       └── shadowing/
-│           ├── 01_prepare_run.js
-│           ├── 02_parse_normalize.js
-│           ├── 03_build_srt.js
-│           ├── 04_build_response.js
-│           └── 05_collect_pexels.js
+│       ├── shadowing/
+│       │   ├── 01_prepare_run.js
+│       │   ├── 02_parse_normalize.js
+│       │   ├── 03_build_srt.js
+│       │   ├── 04_build_response.js
+│       │   └── 05_collect_pexels.js
+│       ├── tiktok-publish/
+│       │   ├── 01_resolve_video.js
+│       │   └── 02_build_response.js
+│       └── buffer-publish/
+│           ├── 01_resolve_video.js
+│           ├── 02_build_buffer_request.js
+│           └── 03_build_response.js
 │
 ├── build/                    ← SINH RA bởi deploy.js, không sửa tay
 │   ├── shadowing.json
-│   └── shadowing-stub.json
+│   ├── shadowing-stub.json
+│   ├── tiktok-publish.json
+│   └── buffer-publish.json
+│
+├── publish.config.json       ← bucket/region/channel — KHÔNG phải secret, có trong git
+│
+├── secrets/                  ← chmod 600, gitignored (trừ file .example)
+│   └── tiktok.json           ← ngoại lệ duy nhất, vì token xoay vòng
 │
 ├── assets/                   ← input do người dùng đưa vào (ảnh nền, nhạc)
 │   └── music/                ← bed nhạc bạn tự bỏ vào; `.openverse/` là cache tải về
@@ -162,6 +181,63 @@ curl -X POST http://localhost:5678/webhook/shadowing \
   -d '{"topic":"asking for directions","sentenceCount":6,"gapSeconds":3}'
 ```
 
+### TikTok
+
+App phải đăng ký **platform Desktop** trong Login Kit, redirect
+`http://localhost:3455/callback/`. Đó là lý do có loopback: platform **Web** bị ép
+"absolute and begins with https", không có ngoại lệ cho localhost. Đổi lại Desktop
+**bắt buộc PKCE**.
+
+⚠️ **PKCE của TikTok không theo RFC 7636.** Chuẩn là `BASE64URL(SHA256(verifier))`;
+TikTok muốn **HEX** (`CryptoJS.SHA256(v).toString(CryptoJS.enc.Hex)`). Gửi bản
+base64url thì bước authorize bị từ chối mà không có gì chỉ ra nguyên nhân. Xem
+`pkce()` trong `host/tiktok-auth.js`.
+
+Cần **hai** product trong portal: **Login Kit** (giữ redirect URI + OAuth) và
+**Content Posting API** (mở scope `video.upload`).
+
+```bash
+# một lần duy nhất: uỷ quyền
+cp secrets/tiktok.example.json secrets/tiktok.json && chmod 600 secrets/tiktok.json
+# điền clientKey / clientSecret rồi:
+node host/tiktok-auth.js            # mở trình duyệt, tự bắt callback trên :3455
+node host/tiktok-auth.js --manual   # nếu cổng bị chiếm: in URL rồi dán lại
+node host/tiktok-auth.js --status   # không in secret
+
+# đẩy một run vào hộp thư TikTok
+curl -X POST http://localhost:5678/webhook/tiktok-publish \
+  -H 'Content-Type: application/json' -d '{"runId":"20261003160036_3tk7w2"}'
+
+# thử đường ống mà không gọi TikTok (không cần credential)
+curl -X POST http://localhost:5678/webhook/tiktok-publish \
+  -H 'Content-Type: application/json' -d '{"runId":"<id>","dryRun":true}'
+```
+
+### Buffer (đường đang dùng)
+
+```bash
+# 1. khoá: http://localhost:5678 > Credentials
+#    - "AWS S3"     (aws)            region + accessKeyId + secretAccessKey
+#    - "Buffer API" (httpHeaderAuth) name=Authorization  value=Bearer <key>
+# 2. phần không phải khoá: sửa publish.config.json (bucket, region, channelId)
+
+# đăng vào khe tiếp theo của hàng đợi
+curl -X POST http://localhost:5678/webhook/buffer-publish \
+  -H 'Content-Type: application/json' -d '{"runId":"20261003161149_66yqew"}'
+
+# hoặc hẹn giờ cụ thể (ISO 8601 UTC)
+curl -X POST http://localhost:5678/webhook/buffer-publish \
+  -H 'Content-Type: application/json' \
+  -d '{"runId":"<id>","dueAt":"2026-10-05T09:00:00.000Z"}'
+
+```
+
+**Free plan của Buffer: 100 request/15 phút, 100/24h, 3000/30 ngày.**
+
+**Hạn mức ~5 draft chờ / 24h.** Vì thế `01_resolve_video.js` **từ chối** video
+không phải 9:16 thay vì tiêu một suất vào bản letterbox, và node upload **không
+retry** — retry sau một lần upload dở dang là tiêu suất thứ hai.
+
 ---
 
 ## Secret
@@ -175,6 +251,24 @@ curl -X POST http://localhost:5678/webhook/shadowing \
   Đừng tốn công với internal `/rest` API — nó cần session cookie và payload đổi
   theo từng bản n8n.
 - Đừng in khoá ra log. Khi cần kiểm tra thì in độ dài và 4 ký tự đầu.
+
+**Ngoại lệ có chủ ý: TikTok ở `secrets/tiktok.json`, không ở credential store.**
+
+Lý do nằm ngay trong gạch đầu dòng phía trên: *Public API v1 không cho sửa giá trị
+credential*. Mà `refresh_token` của TikTok **xoay mỗi lần refresh** — TikTok nói rõ
+"the returned refresh_token may be different than the one passed in", và bản cũ
+chết ngay. Một giá trị đổi hằng ngày thì credential store **không chứa nổi**. Đã
+cân nhắc tách đôi (client secret ở n8n, token ở file) và loại: n8n không có
+credential type nào nhét được `client_key`/`client_secret` vào **body**
+form-urlencoded, và chia một bí mật ra hai nơi thì khó lý giải hơn là gộp.
+
+Hệ quả phải tôn trọng:
+- File `chmod 600`, `secrets/` gitignored (chừa `tiktok.example.json`).
+- Mọi lần ghi phải **atomic** (temp + rename). Mất `refresh_token` giữa chừng là
+  phải quay lại màn hình consent trên trình duyệt.
+- **Chỉ `container/cli/tiktok_token.js` được đụng vào file này.** `host/tiktok-auth.js`
+  gọi qua `docker exec` chứ không tự tính toán token — một bản cài đặt, không có
+  bản thứ hai để lệch.
 
 **Đổi tài khoản owner n8n** (email/password đăng nhập UI):
 
@@ -200,6 +294,10 @@ tồn tại ở đó, không có bản sao nào khác. API key cũ vẫn dùng �
 | `N8N_RESTRICT_FILE_ACCESS_TO=/data/workflow` | mặc định chỉ cho ghi `~/.n8n-files` |
 | `NODE_FUNCTION_ALLOW_BUILTIN=fs,path,child_process,crypto` | Code node cần `fs` |
 | `N8N_RUNNERS_ENABLED=true` | Code node trong n8n 2.x cần task runner |
+
+`.env` còn giữ **id** của credential (`CRED_GROQ_ID`, `CRED_EDGETTS_ID`,
+`CRED_PEXELS_ID`, `CRED_AWS_ID`, `CRED_BUFFER_ID`) — chỉ là id, không phải giá trị.
+`host/deploy.js` nối chúng vào node lúc deploy.
 
 ---
 
@@ -247,6 +345,89 @@ video sai — nên phải kiểm chứng bằng pixel, đừng tin là nó chạ
    byte UTF-8 dôi ra — phần bị cắt chính là mấy dấu cách đó nên không vẽ thừa gì.
    **Đừng đổi sang `text=`**: chủ đề là input người dùng, phải escape qua hai tầng
    parser của ffmpeg.
+
+### Hai cái bẫy của n8n khi viết Code node
+
+1. **n8n cắt thông báo lỗi của Code node tại dấu hai chấm CUỐI CÙNG.** Phần phía
+   trước không bao giờ tới được người gọi. Đã đo:
+   `"... is 1280x720, not 9:16. TikTok allows..."` → người gọi nhận `"16. TikTok allows..."`;
+   `'topic is required - POST e.g. {"topic":"x"}'` → nhận `'"x"}'`.
+   Nên **mọi `throw` trong `container/nodes/**` phải không có dấu hai chấm** — dùng
+   ` - `. Dump JSON thì phải `.replace(/:/g, '=')` trước khi nhét vào message, xem
+   `brief()` trong `02_parse_normalize.js`.
+
+2. **Node có hai đầu ra thì `$('Tên node')` không giải được từ phía dưới** — nó
+   trả `undefined` và node sau chết ở chỗ đọc `.json`. Gặp khi `Resolve Video`
+   được bật `onError: continueErrorOutput`. Cách chữa đã dùng: **ghi một file plan**
+   rồi truyền đường dẫn, đúng khuôn `build_video.js` đã làm. Đừng cố vật lộn với
+   biểu thức.
+
+   Kèm theo: `Execute Command` khi exit code khác 0 thì n8n **vứt luôn stdout** và
+   chỉ đưa ra `{error}`. Nên `tiktok_publish.js` cố ý in lỗi vận hành thành JSON
+   rồi **exit 0** — ngoại lệ với quy tắc "exit khác 0 khi hỏng" ở trên, lý do ghi
+   ngay trong file.
+
+### Đăng lên TikTok qua Buffer
+
+Chọn Buffer vì nó là **đối tác được TikTok duyệt**: post ra công khai, theo lịch,
+không cần audit Content Posting API và không phải bấm tay trong app. Đường trực
+tiếp (`tiktok-publish`) vẫn giữ nhưng chỉ bỏ được draft vào hộp thư.
+
+**Buffer không có endpoint upload.** Tài liệu của họ: asset phải "reachable over
+the public internet without authentication" và "must stay reachable **until the
+post publishes**, not just when you create it". Mà `mode` chỉ có `addToQueue` hoặc
+`customScheduled` — **không có đăng ngay** — nên khe hàng đợi có thể chạy vài giờ
+sau. Hệ quả: tunnel tạm và URL ký/hết hạn đều **không dùng được**; file phải nằm ở
+S3 công khai. Đó là lý do có hẳn một chặng S3 trước khi gọi Buffer.
+
+Google Drive **không dùng được** — Buffer gọi đích danh: "Links that require a
+viewer to be signed in — for example a Google Drive or Dropbox 'share' link — will
+not work."
+
+**Buffer hỏng ở BA chỗ khác nhau**, và "luôn trả 200" chỉ đúng với hai trong số đó.
+API key sai là **HTTP 401 thẳng** — đã đo, không phải suy đoán:
+- `body.errors[]` — `UNAUTHORIZED`, `NOT_FOUND`, `RATE_LIMIT_EXCEEDED`
+- `data.createPost` trả về union; thất bại là `MutationError` **nằm trong `data`**,
+  không phải trong `errors`
+
+- HTTP **401** với token sai, node HTTP trả về dạng `{error:{message}}` hoàn toàn khác
+
+Nên một response có thể 200, `errors` rỗng, mà **không đăng gì cả**. Phải xin
+`__typename` và kiểm cả ba nhánh — xem `03_build_response.js`.
+
+### Khoá nằm ở n8n, không nằm trong file
+
+Mọi bước chạm vào khoá đều là **node gốc của n8n** — `awsS3` dùng credential `aws`,
+HTTP Request dùng `httpHeaderAuth` cho Buffer. Khoá do credential store mã hoá giữ
+và sửa trên UI; **không Code node nào nhìn thấy chúng**. Đúng kiểu Pexels đã làm
+(xem `05_collect_pexels.js`).
+
+Thứ không phải khoá — bucket, region, prefix, channelId — nằm ở
+**`publish.config.json`**, có trong git để diff được. Lưu ý `s3.region` ở đây phải
+**trùng** region đặt trên credential: credential ký request, config dựng URL công khai.
+
+> Đã từng tự ký SigV4 bằng `crypto` trong một CLI script (image hardened không cài
+> được `aws-sdk`), và nó chạy đúng — khớp test vector chính thức của AWS. Nhưng
+> cách đó buộc khoá phải nằm trong file, nên đã bỏ khi chuyển sang node `awsS3`.
+
+Hai thứ về bucket, cả hai đều là mặc định **mới** của AWS và đều làm Buffer nhận 403:
+- **ACL bị tắt** trên bucket tạo từ 2023 trở đi. Gửi `x-amz-acl: public-read` sẽ bị
+  từ chối với `AccessControlListNotSupported`. Để `s3.acl` rỗng và mở công khai
+  bằng **bucket policy**.
+- **Block Public Access** bật sẵn. Phải tắt thì policy mới có hiệu lực.
+
+**Lần post đầu tiên ngay sau khi mở công khai bucket có thể hỏng một lần.** Đo
+được: `Invalid post: Video could not be read from its URL` trong khi URL đó tải
+đầy đủ 2.7MB và decode ra h264+aac bình thường từ máy khác. **Gửi lại y nguyên là
+thành công.** Nhiều khả năng Buffer nhớ kết quả hỏng của lần thử trước đó (lúc
+object còn 403), hoặc policy chưa lan hết. Nếu gặp lại thì cứ gọi lần hai trước
+khi đi tìm nguyên nhân ở chỗ khác.
+
+Node **`Verify Public URL`** kiểm lại sau khi upload: GET **ẩn danh** (cố tình
+không gắn credential, vì phải tái hiện đúng thứ server của Buffer thấy), lấy 64
+byte đầu, và đòi trong đó có `ftyp`. S3 trả lỗi bằng XML kèm HTTP 200 nên chỉ nhìn
+status là không đủ. Hỏng ở đây thì biết ngay, chứ không phải vài giờ sau trong
+hàng đợi Buffer nơi không có gì nói lý do.
 
 ### Gọi API ảnh bên ngoài
 

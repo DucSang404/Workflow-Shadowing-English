@@ -10,7 +10,8 @@ const cfg = $('Prepare Run').first().json;
 
 const probeRaw = $input.first().json.stdout;
 if (!probeRaw) {
-  throw new Error(`duration probe produced no output: ${JSON.stringify($input.first().json).slice(0, 300)}`);
+  throw new Error('duration probe produced no output - '
+    + JSON.stringify($input.first().json).slice(0, 300).replace(/:/g, '='));
 }
 const probe = JSON.parse(probeRaw);
 

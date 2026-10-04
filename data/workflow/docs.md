@@ -1,9 +1,11 @@
 # AI Shadowing Video Generator — trạng thái & roadmap
 
-Cập nhật: 2026-09-17
+Cập nhật: 2026-10-04
 
 - **Workflow chính**: `JwSXDLLsNxY3e9CV` — active, `POST http://localhost:5678/webhook/shadowing`
 - **Workflow stub**: `jyx9sYJhVo74D48Q` — active, `/webhook/shadowing-stub`, thay node Groq bằng hội thoại canned (test pipeline không tốn quota)
+- **Workflow đăng TikTok**: `/webhook/buffer-publish` — S3 → Buffer → TikTok công khai. **Chờ điền khoá**, xem mục B.
+- **Đường dự phòng**: `/webhook/tiktok-publish` — gọi thẳng TikTok, chỉ bỏ được draft vào hộp thư. Bị chặn ở Login Kit, xem mục B.
 - **Stack**: n8n 2.36.9 (+ffmpeg static) · `travisvn/openai-edge-tts` · Groq `openai/gpt-oss-120b`
 - **Chi phí**: $0
 
@@ -174,7 +176,155 @@ watermark** dù đã `nologo=true`.
 
 ---
 
-### B. Workflow đăng TikTok
+### B. ~~Workflow đăng TikTok~~ ✅ ĐÃ CHUYỂN SANG BUFFER (2026-10-04) — chờ điền khoá
+
+**Đường trực tiếp bị chặn ở thực tế, không phải ở code.** Đã dựng xong và test hết
+(xem phần dưới), nhưng khi uỷ quyền thì TikTok trả `client_key` error. Đã chẩn
+đoán tách bạch: gọi `client_credentials` **thành công** → key và secret đều đúng,
+app hoạt động. Nghĩa là vướng ở cấu hình Login Kit phía portal, không phải code.
+
+**Nên chuyển sang Buffer.** Buffer là đối tác được TikTok duyệt, nên:
+
+| | TikTok trực tiếp | **Buffer** |
+|---|---|---|
+| Audit Content Posting API | bắt buộc, nếu không thì SELF_ONLY | **không cần** |
+| Kết quả | draft trong hộp thư, phải bấm tay | **đăng công khai, tự động** |
+| Caption/hashtag | bị bỏ qua, phải gõ trong app | **API mang theo được** |
+| Hẹn giờ | không | **có, `dueAt` ISO 8601** |
+| Video ở đâu | local là đủ | **phải ở URL công khai** |
+
+**Cái giá: Buffer không có endpoint upload.** Asset phải "reachable over the public
+internet without authentication" và "stay reachable **until the post publishes**".
+Vì `mode` chỉ có `addToQueue` / `customScheduled` — **không có đăng ngay** — khe
+hàng đợi có thể chạy vài giờ sau, nên tunnel tạm và URL ký đều loại. Đã chọn **S3**.
+
+Google Drive đã cân nhắc và **loại**: Buffer gọi đích danh "a Google Drive or
+Dropbox 'share' link — will not work", và Drive trả HTTP 200 kèm HTML khi quá
+quota — đúng kiểu hỏng âm thầm mà `CLAUDE.md` đã cảnh báo.
+
+**Đã làm:**
+
+| Thành phần | Vai trò |
+|---|---|
+| Node `Upload To S3` | node `awsS3` gốc, dùng credential `aws` của n8n |
+| Node `Verify Public URL` | GET **ẩn danh** để tái hiện đúng thứ Buffer sẽ thấy |
+| Node `Create Buffer Post` | HTTP Request gốc, dùng credential `httpHeaderAuth` |
+| `container/nodes/buffer-publish/*` | Chọn video, chặn 16:9, kiểm giới hạn TikTok của Buffer |
+| `host/workflows/buffer-publish.js` | `/webhook/buffer-publish` |
+| `publish.config.json` | bucket/region/channelId — **không phải secret**, có trong git |
+| Credential `AWS S3` + `Buffer API` | **khoá nằm trong credential store của n8n**, sửa trên UI |
+
+**Đã kiểm chứng, không đoán:**
+
+1. **SigV4 khớp test vector chính thức của AWS** (`examplebucket/test.txt` →
+   `f0e8bdb87c96…`). Chạy lại phép đối chiếu này mỗi khi sửa `authorize()`.
+2. Bắn thật lên AWS bằng khoá mẫu → `InvalidAccessKeyId`, tức request **được AWS
+   phân tích đúng**, chỉ khoá là giả.
+3. **Buffer hỏng ở ba chỗ khác nhau**, và "luôn trả 200" chỉ đúng với hai: `errors[]`,
+   `MutationError` nằm trong `data`, và **HTTP 401 thẳng** khi API key sai (đã đo).
+   Một response có thể 200, `errors` rỗng, mà không đăng gì.
+4. Bucket S3 tạo từ 2023 trở đi **tắt ACL** và **bật Block Public Access** sẵn —
+   cả hai đều khiến Buffer nhận 403. Nên có hẳn một node GET lại URL công khai
+   **ẩn danh** và đòi thấy `ftyp` trong 64 byte đầu.
+5. Mọi nhánh lỗi đã test qua webhook: thiếu tham số, runId sai, `dueAt` sai định
+   dạng, chưa có khoá S3. Khi S3 hỏng, workflow **dừng trước khi gọi Buffer** —
+   không đốt một trong 100 request/ngày của Free plan, và lỗi trả về chỉ đúng vào
+   credential cần sửa thay vì một thông báo vô nghĩa từ Buffer.
+6. **IF node thay cho error output.** Node có hai đầu ra làm `$('Tên node')` trả
+   `undefined` từ phía dưới, mà ba node ở đây cần đọc `$('Resolve Video')`. Nên
+   rẽ nhánh bằng IF riêng để node nguồn giữ một đầu ra.
+
+**Đã chạy thật thành công (2026-10-04)** — `postId 6ac1f7d75829d2489a08c6ed`, video
+2.7MB lên `shadowing-english` (ap-southeast-2), caption + 6 hashtag đi kèm,
+thumbnail khớp cover ở 2680ms, vào khe tiếp theo của hàng đợi Buffer.
+
+⚠️ **Lần post đầu ngay sau khi mở công khai bucket hỏng một lần** với
+`Invalid post: Video could not be read from its URL`, trong khi URL đó tải đầy đủ
+và decode bình thường từ máy khác. Gửi lại y nguyên thì thành công. Gặp lại thì
+thử lần hai trước khi nghi ngờ chỗ khác.
+
+**Còn lại để chạy được:**
+1. `http://localhost:5678` → **Credentials** → điền `AWS S3` (region + key + secret)
+   và `Buffer API` (`Authorization` = `Bearer <key>`).
+2. `publish.config.json` → điền `s3.bucket`, chỉnh `s3.region` cho **trùng** credential.
+3. Bucket phải **tắt Block Public Access** và có bucket policy cho `s3:GetObject` tới `"*"`.
+
+**Không còn khoá nào trong file** — đúng quy tắc ở `CLAUDE.md`. Ngoại lệ duy nhất
+còn lại là `secrets/tiktok.json` của đường trực tiếp, vì refresh token xoay vòng
+mà API v1 không sửa được giá trị credential.
+
+<details>
+<summary>Đường trực tiếp tới TikTok (đã dựng xong, đang bị chặn ở Login Kit)</summary>
+
+#### Workflow đăng TikTok — inbox draft
+
+**Phân tích cũ ở dưới đã bỏ sót một đường, và đường đó đổi hẳn bài toán.**
+
+Ngoài Direct Post (`video.publish`, bắt buộc audit, chưa duyệt thì mọi post bị ép
+`SELF_ONLY`), TikTok còn có **inbox draft**: `POST /v2/post/publish/inbox/video/init/`
+với scope **`video.upload`**. Đường này **không bị gate bởi audit**, vì người thật
+bấm nút đăng. Video rơi vào hộp thư trong app, bạn mở ra gõ caption rồi đăng —
+công khai bình thường. Nên **không phải chọn giữa "chờ duyệt vài tuần" và "đăng
+tay hoàn toàn"** như đoạn dưới viết.
+
+Đánh đổi: TikTok **bỏ qua toàn bộ `post_info`** với inbox draft. Caption/hashtag
+không gửi qua API được, nên mỗi run ghi thêm `output/<runId>_caption.txt` để copy.
+Và hạn mức **~5 draft chờ / 24h**.
+
+**Đã làm:**
+
+| Thành phần | Vai trò |
+|---|---|
+| `container/cli/tiktok_token.js` | Chủ sở hữu **duy nhất** của vòng đời token — exchange, refresh, ghi atomic |
+| `container/cli/tiktok_publish.js` | init → PUT theo chunk → poll status |
+| `container/nodes/tiktok-publish/*` | Chọn video, từ chối cái không hợp lệ, dựng câu trả lời |
+| `host/tiktok-auth.js` | OAuth một lần; không tự tính token mà gọi container qua `docker exec` |
+| `secrets/tiktok.json` | app key + token, chmod 600, gitignored |
+| Caption + hashtag | Groq sinh **cùng call** với hội thoại (thêm ~40 token, không tốn request) |
+
+**Bốn ràng buộc đã xác minh từ tài liệu TikTok, không đoán:**
+
+1. `redirect_uri` **tuỳ platform**: **Web** bị ép https, không có ngoại lệ localhost;
+   **Desktop** thì chỉ cho `localhost`/`127.0.0.1`, bắt buộc có cổng, và **http được
+   chấp nhận**. Đã chọn Desktop + `http://localhost:3455/callback/` nên
+   `host/tiktok-auth.js` tự dựng server bắt callback — một lệnh, không phải dán gì.
+   Giá phải trả là **PKCE bắt buộc**, và **PKCE của TikTok lệch RFC 7636**: challenge
+   là **HEX** của SHA256 chứ không phải base64url. Gửi base64url thì authorize bị từ
+   chối không rõ lý do.
+2. `total_chunk_count` = **`floor(size/chunk)`**, không phải `ceil`. Chunk cuối
+   được phép to hơn `chunk_size` (tới 128MB) để nuốt phần dư. Dùng `ceil` sẽ tạo
+   chunk cuối < 5MB và TikTok **từ chối sau khi đã upload xong phần còn lại**.
+   Đã kiểm thử ở 2.6MB / 5MB / 7MB / 12MB / 100MB / 4GB — luôn phủ đủ byte.
+3. Video **< 5MB phải đi nguyên khối** (`chunk_size = video_size`). Video hiện tại
+   2.6–3.4MB nên luôn rơi vào nhánh này.
+4. `refresh_token` **xoay mỗi lần refresh**; bản cũ chết ngay.
+
+**Đã kiểm thử không cần credential:** dry-run toàn tuyến, từ chối 16:9, từ chối
+runId sai định dạng, chặn path traversal, báo chưa uỷ quyền kèm hướng dẫn. Endpoint
+token thật đã trả `invalid_grant - Authorization code is expired` với code giả —
+tức TikTok **chấp nhận định dạng request**, chỉ thiếu uỷ quyền thật.
+
+**Còn lại để chạy được:** trong portal thêm **Login Kit** (platform Desktop,
+redirect `http://localhost:3455/callback/`) và **Content Posting API** (scope
+`video.upload`); điền `clientKey`/`clientSecret` vào `secrets/tiktok.json` rồi chạy
+`node host/tiktok-auth.js`. Xem `CLAUDE.md`, mục "TikTok".
+
+**Nếu sau này muốn zero-touch** thì nộp audit cho Content Posting API và đổi sang
+Direct Post — dùng chung OAuth, refresh token và bước upload, chỉ khác endpoint
+`init` và việc `post_info` bắt đầu có tác dụng.
+
+**Trạng thái:** bế tắc ở bước authorize. Cần thêm product **Login Kit** (platform
+Desktop, redirect `http://localhost:3455/callback/`) và bật scope `video.upload`
+trong portal. Code không có lỗi gì đã biết.
+
+</details>
+
+---
+
+<details>
+<summary>Phân tích ban đầu (giữ lại — nó đúng về Direct Post, chỉ thiếu đường inbox)</summary>
+
+#### Workflow đăng TikTok
 
 **Chặn đầu tiên**: TikTok Content Posting API **bắt buộc đăng ký developer app
 và duyệt** — không có đường tắt bằng API key đơn giản. Cần:
@@ -197,6 +347,8 @@ tại là 16:9 1280×720. Phải làm mục *Ý tưởng bổ sung #3 — xuất
 **Cần bạn cấp**: tài khoản TikTok Developer + xác nhận có muốn đi qua quy trình
 duyệt không. Nếu không muốn duyệt, phương án thay thế là xuất file ra thư mục
 rồi đăng tay — vẫn tiết kiệm 90% công.
+
+</details>
 
 ---
 

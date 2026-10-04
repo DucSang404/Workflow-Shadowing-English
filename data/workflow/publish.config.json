@@ -1,0 +1,15 @@
+{
+  "_comment": "Non-secret config. The KEYS live in the n8n credential store - 'AWS S3' (type aws) and 'Buffer API' (type httpHeaderAuth) - and are edited at http://localhost:5678 > Credentials, never here.",
+  "s3": {
+    "bucket": "shadowing-english",
+    "_region": "Must match the region set on the 'AWS S3' credential. The credential's region signs the request; this one builds the public URL.",
+    "region": "ap-southeast-2",
+    "prefix": "",
+    "_publicBaseUrl": "Optional. Set if the bucket is behind CloudFront or a custom domain; otherwise the plain S3 URL is used.",
+    "publicBaseUrl": ""
+  },
+  "buffer": {
+    "_channelId": "From your Buffer channel URL - publish.buffer.com/channels/<THIS>/schedule. Not a secret.",
+    "channelId": "6ac1e9ff6a5c39ccb60c447c"
+  }
+}

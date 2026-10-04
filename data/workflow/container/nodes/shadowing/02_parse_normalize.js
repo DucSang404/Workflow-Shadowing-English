@@ -69,11 +69,18 @@ function normalizeForTts(input) {
   return t.replace(/\s+/g, ' ').replace(/\s+([.,!?;:])/g, '$1').trim();
 }
 
+// n8n truncates a Code node's error message at its LAST colon, so anything before
+// one never reaches the caller. Hence ` - ` instead of `: ` throughout, and the
+// colon-stripping in `brief()` - a raw JSON dump is full of colons and would eat
+// the sentence explaining it.
+const brief = (v, n) =>
+  (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, n).replace(/:/g, '=');
+
 // ---------- pull the payload out of the completion ------------------------
 const completion = $input.first().json;
 const content = completion?.choices?.[0]?.message?.content;
 if (!content) {
-  throw new Error(`Groq returned no content: ${JSON.stringify(completion).slice(0, 400)}`);
+  throw new Error(`Groq returned no content - ${brief(completion, 400)}`);
 }
 
 let parsed;
@@ -82,7 +89,7 @@ try {
 } catch (err) {
   // json_object mode is usually clean, but a fenced block still shows up sometimes.
   const match = content.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`Groq content is not JSON: ${content.slice(0, 300)}`);
+  if (!match) throw new Error(`Groq content is not JSON - ${brief(content, 300)}`);
   parsed = JSON.parse(match[0]);
 }
 
@@ -111,12 +118,22 @@ const sentences = rows.slice(0, cfg.sentenceCount).map((row, i) => {
   return { idx: i + 1, speaker, en, vi, imageQuery, ttsText: normalizeForTts(en) };
 });
 
+// Caption and hashtags for the TikTok post, generated in the same Groq call as
+// the dialogue. The model can forget them without the run being wrong, so both
+// fall back to something usable rather than throwing.
+const caption = String(parsed.caption ?? '').trim().slice(0, 300)
+  || `Luyện nói tiếng Anh: ${cfg.topic}`;
+const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
+  .map((t) => String(t).trim().replace(/^#+/, '').replace(/\s+/g, ''))
+  .filter(Boolean)
+  .slice(0, 8);
+
 // The manifest is the contract the container/cli/* scripts read: they take a
 // directory on argv and nothing else, so anything they need has to be in here.
 // fetch_music.js reads `music` the way fetch_scenes.js reads `sentences`.
 fs.writeFileSync(
   cfg.manifestPath,
-  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music, sentences }, null, 2),
+  JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music, caption, hashtags, sentences }, null, 2),
   'utf8',
 );
 

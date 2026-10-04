@@ -8,7 +8,8 @@ const srt = $('Build SRT').first().json;
 
 const raw = $input.first().json.stdout;
 if (!raw) {
-  throw new Error(`video assembly produced no output: ${JSON.stringify($input.first().json).slice(0, 300)}`);
+  throw new Error('video assembly produced no output - '
+    + JSON.stringify($input.first().json).slice(0, 300).replace(/:/g, '='));
 }
 const built = JSON.parse(raw);
 
@@ -21,13 +22,24 @@ const built = JSON.parse(raw);
 // to re-audit subtitle drift once the work directory is gone.
 const keptSrt = `${cfg.outputDir}/${cfg.runId}.srt`;
 const keptRecord = `${cfg.outputDir}/${cfg.runId}.json`;
+// Plain text, next to the mp4, because the TikTok inbox-draft route IGNORES every
+// post_info field - the caption is typed in the app, so what this run can usefully
+// hand over is something to paste rather than something to send.
+const keptCaption = `${cfg.outputDir}/${cfg.runId}_caption.txt`;
 let cleaned = false;
+// Hoisted out of the try because the response below reads the caption off it, and
+// housekeeping failing must not take the caption down with it.
+let manifest = null;
 
 try {
-  const manifest = JSON.parse(fs.readFileSync(cfg.manifestPath, 'utf8'));
+  manifest = JSON.parse(fs.readFileSync(cfg.manifestPath, 'utf8'));
   const plan = JSON.parse(fs.readFileSync(cfg.planPath, 'utf8'));
 
   fs.copyFileSync(cfg.srtPath, keptSrt);
+
+  const tags = (manifest.hashtags ?? []).map((t) => `#${t}`).join(' ');
+  fs.writeFileSync(keptCaption, `${manifest.caption ?? ''}\n\n${tags}\n`, 'utf8');
+
   fs.writeFileSync(keptRecord, JSON.stringify({
     runId: cfg.runId,
     topic: cfg.topic,
@@ -39,6 +51,8 @@ try {
     sentences: manifest.sentences,
     segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),
     scenes: srt.scenes,
+    caption: manifest.caption ?? null,
+    hashtags: manifest.hashtags ?? [],
     outputs: built.outputs,
     covers: built.covers ?? [],
     durationSec: built.durationSec,
@@ -69,6 +83,8 @@ return [{
     cover: built.cover ?? null,
     covers: built.covers ?? [],
     subtitle: keptSrt,
+    caption: manifest?.caption ?? null,
+    captionFile: keptCaption,
     record: keptRecord,
     sentences: built.segments,
     gapSeconds: cfg.gapSeconds,

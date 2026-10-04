@@ -1,0 +1,389 @@
+{
+  "name": "TikTok Publish (via Buffer)",
+  "slug": "buffer-publish",
+  "webhookPath": "buffer-publish",
+  "nodes": [
+    {
+      "id": "bp-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        0
+      ],
+      "webhookId": "d4b9c2e7-1a56-4f83-9e21-5c7d0a3b8f64",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buffer-publish",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "bp-resolve",
+      "name": "Resolve Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Works out which file to post, and refuses the ones that should not go.\n//\n// Never throws. It returns `ok false` with a reason and lets the IF node after it\n// route that straight to the reply. That is deliberate and not just style: a node\n// with two outputs (which is what `onError: continueErrorOutput` makes) stops\n// resolving by name from downstream - `$('Resolve Video')` comes back undefined -\n// and every node below here needs to read exactly that. Keeping this node\n// single-output is what lets the rest of the graph refer to it.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\nconst OUTPUT = `${ROOT}/output`;\n\nconst raw = $input.first().json;\nconst body = raw.body ?? raw ?? {};\nconst fail = (error) => [{ json: { ok: false, stage: 'resolve', error } }];\n\nconst runId = String(body.runId ?? '').trim();\nconst explicit = String(body.video ?? '').trim();\nconst allowLandscape = body.allowLandscape === true;\nconst dueAt = String(body.dueAt ?? '').trim();\n\nif (!runId && !explicit) {\n  return fail('request body needs runId or video - e.g. runId = 20261003160036_3tk7w2');\n}\nif (runId && !/^[0-9]{14}_[a-z0-9]{6}$/.test(runId)) {\n  return fail(`runId does not look like a run id - ${runId}`);\n}\n// Buffer wants an ISO 8601 UTC instant; anything else is rejected far downstream.\nif (dueAt && !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$/.test(dueAt)) {\n  return fail(`dueAt must be ISO 8601 UTC like 2026-10-05T09.00.00.000Z but was ${dueAt}`);\n}\n\nlet videoPath;\nif (explicit) {\n  if (!explicit.startsWith(`${OUTPUT}/`)) return fail(`video must be a path under ${OUTPUT}`);\n  if (!fs.existsSync(explicit)) return fail(`no such video - ${explicit}`);\n  videoPath = explicit;\n} else {\n  const candidates = [`${OUTPUT}/${runId}_portrait.mp4`, `${OUTPUT}/${runId}.mp4`];\n  videoPath = candidates.find((f) => fs.existsSync(f));\n  if (!videoPath) return fail(`no video for run ${runId} - looked for ${candidates.join(' and ')}`);\n}\n\n// Bucket, region and channel are config, not secrets, so they live in a plain\n// file. The ACCESS KEYS are not here and never reach this code - they sit in the\n// n8n credential store and only the AWS S3 and Buffer nodes ever see them. Same\n// split as the Pexels search, see container/nodes/shadowing/05_collect_pexels.js.\nlet cfg;\ntry {\n  cfg = JSON.parse(fs.readFileSync(`${ROOT}/publish.config.json`, 'utf8'));\n} catch (err) {\n  return fail(`cannot read publish.config.json - ${err.message}`);\n}\nconst s3 = cfg.s3 ?? {};\nif (!s3.bucket || s3.bucket === 'FILL_ME_IN') {\n  return fail('publish.config.json has no s3.bucket yet');\n}\n\nlet record = null;\nconst recordPath = `${OUTPUT}/${runId || ''}.json`;\nif (runId && fs.existsSync(recordPath)) {\n  try {\n    record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));\n  } catch (err) {\n    console.log(`[buffer] run ${runId} - unreadable record (${err.message})`);\n  }\n}\n\nconst shape = (record?.outputs ?? []).find((o) => o.path === videoPath);\nif (shape && shape.height <= shape.width && !allowLandscape) {\n  return fail(\n    `${videoPath} is ${shape.width}x${shape.height}, which is not vertical. Posting that to `\n    + 'TikTok wastes a slot on a letterboxed clip, so this refuses. Rebuild the run with '\n    + 'orientation = portrait, or resend with allowLandscape = true.',\n  );\n}\n\n// Buffer's own TikTok limits, checked before a 3 MB upload rather than after.\nconst sizeBytes = fs.statSync(videoPath).size;\nconst durationSec = Number(record?.durationSec ?? 0);\nif (durationSec && (durationSec < 3 || durationSec > 600)) {\n  return fail(`TikTok takes 3s to 10min, this run is ${durationSec}s`);\n}\nif (sizeBytes > 1024 * 1024 * 1024) {\n  return fail(`TikTok caps video at 1 GB, this is ${Math.round(sizeBytes / 1048576)} MB`);\n}\n\nconst fileName = videoPath.split('/').pop();\nconst s3Key = `${s3.prefix ?? ''}${fileName}`;\n\n// Virtual-hosted style, except for a bucket whose name contains a dot - the\n// wildcard certificate for *.s3.<region>.amazonaws.com does not match those, so\n// they have to go path-style or TLS fails.\nconst encoded = s3Key.split('/').map(encodeURIComponent).join('/');\nconst publicUrl = s3.publicBaseUrl\n  ? `${String(s3.publicBaseUrl).replace(/\\/$/, '')}/${encoded}`\n  : (s3.bucket.includes('.')\n    ? `https://s3.${s3.region}.amazonaws.com/${s3.bucket}/${encoded}`\n    : `https://${s3.bucket}.s3.${s3.region}.amazonaws.com/${encoded}`);\n\n// Unlike the TikTok inbox-draft route, Buffer DOES carry the caption, so the text\n// generated alongside the dialogue is what actually gets posted.\nlet caption = '';\nconst captionPath = runId ? `${OUTPUT}/${runId}_caption.txt` : '';\nif (captionPath && fs.existsSync(captionPath)) {\n  caption = fs.readFileSync(captionPath, 'utf8').trim();\n}\n\nconst cover = (record?.covers ?? [])[0] ?? null;\n\nreturn [{\n  json: {\n    ok: true,\n    runId: runId || null,\n    videoPath,\n    sizeBytes,\n    durationSec: durationSec || null,\n    width: shape?.width ?? null,\n    height: shape?.height ?? null,\n    topic: record?.topic ?? null,\n    bucket: s3.bucket,\n    s3Key,\n    publicUrl,\n    caption,\n    // Lines the TikTok thumbnail up with the cover jpg this run already made.\n    thumbnailOffsetMs: Number.isFinite(cover?.atSec) ? Math.round(cover.atSec * 1000) : null,\n    channelId: cfg.buffer?.channelId ?? '',\n    dueAt: dueAt || null,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "bp-if",
+      "name": "Resolved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -360,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "bp-read",
+      "name": "Read Video File",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        -160,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $json.videoPath }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      }
+    },
+    {
+      "id": "bp-s3",
+      "name": "Upload To S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [
+        40,
+        0
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "bucketName": "={{ $('Resolve Video').first().json.bucket }}",
+        "fileName": "={{ $('Resolve Video').first().json.s3Key }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {},
+        "tagsUi": {}
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "aws": {
+          "id": "yQv4D8x5V968dWXO",
+          "name": "AWS S3"
+        }
+      }
+    },
+    {
+      "id": "bp-verify",
+      "name": "Verify Public URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Resolve Video').first().json.publicUrl }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Range",
+              "value": "bytes=0-63"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bp-request",
+      "name": "Build Buffer Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Checks that S3 really is serving the video publicly, then builds the Buffer\n// mutation. Runs between the verification GET and the Buffer POST.\n//\n// The verification matters more than it looks. Buckets created since 2023 have\n// ACLs disabled AND Block Public Access switched on by default, so the upload\n// succeeds and the object is still unreachable. Buffer would then accept the post,\n// fail hours later inside TikTok, and say nothing useful. Catching it here turns\n// a silent dud into an error naming the bucket setting to change.\nconst cfg = $('Resolve Video').first().json;\nconst probe = $input.first().json;\n\nconst fail = (error, hint) => [{ json: { ok: false, stage: 's3', error, hint: hint ?? null } }];\n\n// Read and Upload both continue on error, so their failures arrive as an `error`\n// on the item they emitted. Checked by name before the verification result,\n// because a failed upload makes the public URL 404 and the honest reason for\n// that is upstream - reporting \"not publicly readable\" for a rejected access key\n// would send you to the wrong setting entirely.\nfor (const step of ['Read Video File', 'Upload To S3']) {\n  const err = $(step).first().json.error;\n  if (!err) continue;\n  const message = String(err.message ?? err);\n  return fail(\n    `${step} failed - ${message.slice(0, 220)}`,\n    /InvalidAccessKeyId|SignatureDoesNotMatch|Forbidden|credentials/i.test(message)\n      ? 'open http://localhost:5678 > Credentials > AWS S3 and fill in the key, secret and region'\n      : /NoSuchBucket|not exist/i.test(message)\n        ? 'check s3.bucket in publish.config.json, and that the credential region matches the bucket region'\n        : null,\n  );\n}\n\n// The verification node is set to continue on error, so a 403 arrives here as an\n// error field rather than killing the run.\nif (probe.error) {\n  const msg = String(probe.error.message ?? probe.error);\n  return fail(\n    `the uploaded object is not publicly readable - ${msg.slice(0, 200)}`,\n    'turn off Block Public Access on the bucket and add a bucket policy granting '\n    + 's3:GetObject to \"*\". Modern buckets have ACLs disabled, so an ACL will not do it.',\n  );\n}\n\n// An HTTP 200 is not proof it is the video: S3 answers a denied read with XML,\n// and a 200 of XML looks identical to a 200 of mp4 from here. Every mp4 opens\n// with a box whose type is \"ftyp\" at offset 4, and that is ASCII, so it survives\n// being read as text.\nconst head = String(probe.data ?? probe.body ?? '');\nif (!head.includes('ftyp')) {\n  return fail(\n    `${cfg.publicUrl} did not serve an mp4 - got ${JSON.stringify(head.slice(0, 80))}`,\n    head.includes('<?xml') || head.includes('AccessDenied')\n      ? 'that is an S3 error document, so the object is uploaded but not public'\n      : null,\n  );\n}\n\nconst text = cfg.caption || `Luyen noi tieng Anh - ${cfg.topic ?? ''}`.trim();\n\n// GraphQL string literals follow JSON's escaping rules, so JSON.stringify makes a\n// correct one - including for Vietnamese captions, emoji and newlines. Variables\n// would be the other way, but they need the exact input type name from the schema;\n// this needs nothing.\nconst str = (v) => JSON.stringify(String(v ?? ''));\n\nconst scheduling = cfg.dueAt\n  ? `mode: customScheduled\\n      dueAt: ${str(cfg.dueAt)}`\n  : 'mode: addToQueue\\n      schedulingType: automatic';\n\nconst thumb = cfg.thumbnailOffsetMs === null ? '' : `\n            metadata: { thumbnailOffset: ${cfg.thumbnailOffsetMs} }`;\n\nconst query = `mutation CreatePost {\n  createPost(\n    input: {\n      text: ${str(text)}\n      channelId: ${str(cfg.channelId)}\n      ${scheduling}\n      assets: [\n        {\n          video: {\n            url: ${str(cfg.publicUrl)}${thumb}\n          }\n        }\n      ]\n    }\n  ) {\n    __typename\n    ... on PostActionSuccess { post { id text } }\n    ... on MutationError { message }\n  }\n}`;\n\nreturn [{ json: { ok: true, text, query } }];\n"
+      }
+    },
+    {
+      "id": "bp-gate",
+      "name": "Uploaded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "built-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "bp-post",
+      "name": "Create Buffer Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        840,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.buffer.com",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.query }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jHknOuKnmjGZzjlW",
+          "name": "Buffer API"
+        }
+      }
+    },
+    {
+      "id": "bp-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shapes the webhook reply, from whichever step spoke last.\n//\n// Three shapes reach this node:\n//   - Resolve Video's refusal, routed here by the IF node\n//   - Build Buffer Request's refusal, when S3 did not serve the file\n//   - the Buffer POST's response\nconst node = $input.first().json;\n\n// The two refusals already carry their own shape.\nif (node.ok === false) {\n  return [{ json: { ok: false, stage: node.stage, error: node.error, hint: node.hint ?? null } }];\n}\n\nconst cfg = $('Resolve Video').first().json;\n\n// Buffer is \"always 200\" only for GraphQL-level outcomes. A bad API key is a flat\n// HTTP 401, which the HTTP node - set to continue on error - hands over as an\n// `error` whose message is the status plus the raw body. Measured, not assumed.\nif (node.error) {\n  const message = String(node.error.message ?? node.error);\n  let code = '';\n  try {\n    code = JSON.parse(message.slice(message.indexOf('{'), message.lastIndexOf('}') + 1))\n      .errors?.[0]?.extensions?.code ?? '';\n  } catch { /* not JSON; the raw message still says enough */ }\n  return [{\n    json: {\n      ok: false,\n      stage: 'buffer',\n      error: `${code || 'request failed'} - ${message.slice(0, 220)}`,\n      hint: /UNAUTHENTICATED|UNAUTHORIZED|401/.test(`${code} ${message}`)\n        ? 'open http://localhost:5678 > Credentials > Buffer API. Header name Authorization, '\n          + 'value must include the word Bearer followed by the key'\n        : null,\n    },\n  }];\n}\n\n// And it fails in TWO more places once the request itself is accepted:\n// `errors[]` for the transport-level refusals, and a MutationError inside `data`\n// for a rejected post. A response can be 200, have an empty `errors`, and still\n// have posted nothing - so both are checked.\nif (Array.isArray(node.errors) && node.errors.length) {\n  const first = node.errors[0];\n  const code = first.extensions?.code ?? '';\n  const hint = code === 'UNAUTHORIZED' ? 'check the Buffer API credential in n8n - it must be the whole value, Bearer included'\n    : code === 'NOT_FOUND' ? 'check buffer.channelId in publish.config.json'\n    : code === 'RATE_LIMIT_EXCEEDED' ? 'the Buffer Free plan allows 100 requests per 24h'\n    : null;\n  return [{ json: { ok: false, stage: 'buffer', error: `${code || 'error'} - ${first.message}`, hint } }];\n}\n\nconst result = node.data?.createPost ?? {};\nif (result.__typename !== 'PostActionSuccess' || !result.post?.id) {\n  return [{\n    json: {\n      ok: false,\n      stage: 'buffer',\n      error: `Buffer refused the post - ${result.message ?? JSON.stringify(result).slice(0, 200)}`,\n      hint: null,\n    },\n  }];\n}\n\nreturn [{\n  json: {\n    ok: true,\n    stage: 'buffer',\n    runId: cfg.runId,\n    topic: cfg.topic,\n    postId: result.post.id,\n    channelId: cfg.channelId,\n    scheduled: cfg.dueAt ?? 'next queue slot',\n    videoUrl: cfg.publicUrl,\n    s3Key: cfg.s3Key,\n    bucket: cfg.bucket,\n    thumbnailOffsetMs: cfg.thumbnailOffsetMs,\n    text: result.post.text,\n    // Nothing is live until Buffer's queue fires; this is where to watch it.\n    queueUrl: `https://publish.buffer.com/channels/${cfg.channelId}/schedule`,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "bp-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1240,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Resolve Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Video": {
+      "main": [
+        [
+          {
+            "node": "Resolved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolved?": {
+      "main": [
+        [
+          {
+            "node": "Read Video File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Video File": {
+      "main": [
+        [
+          {
+            "node": "Upload To S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload To S3": {
+      "main": [
+        [
+          {
+            "node": "Verify Public URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Public URL": {
+      "main": [
+        [
+          {
+            "node": "Build Buffer Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Buffer Request": {
+      "main": [
+        [
+          {
+            "node": "Uploaded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uploaded?": {
+      "main": [
+        [
+          {
+            "node": "Create Buffer Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Buffer Post": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Ho_Chi_Minh"
+  }
+}

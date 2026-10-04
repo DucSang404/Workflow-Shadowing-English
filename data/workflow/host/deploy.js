@@ -18,6 +18,8 @@ const { client } = require('./lib/n8n');
 const REGISTRY = {
   shadowing: require('./workflows/shadowing'),
   'shadowing-stub': require('./workflows/shadowing-stub'),
+  'tiktok-publish': require('./workflows/tiktok-publish'),
+  'buffer-publish': require('./workflows/buffer-publish'),
 };
 
 (async () => {
@@ -31,11 +33,14 @@ const REGISTRY = {
     throw new Error(`unknown workflow: ${unknown.join(', ')}. Known: ${Object.keys(REGISTRY).join(', ')}`);
   }
 
-  const env = requireEnv(loadEnv(), 'CRED_GROQ_ID', 'CRED_EDGETTS_ID', 'CRED_PEXELS_ID');
+  const env = requireEnv(loadEnv(), 'CRED_GROQ_ID', 'CRED_EDGETTS_ID', 'CRED_PEXELS_ID',
+    'CRED_AWS_ID', 'CRED_BUFFER_ID');
   const credentials = {
     groq: { id: env.CRED_GROQ_ID, name: 'Groq API' },
     edgeTts: { id: env.CRED_EDGETTS_ID, name: 'EdgeTTS Header Auth' },
     pexels: { id: env.CRED_PEXELS_ID, name: 'Pexels API' },
+    aws: { id: env.CRED_AWS_ID, name: 'AWS S3' },
+    buffer: { id: env.CRED_BUFFER_ID, name: 'Buffer API' },
   };
 
   const n8n = client();
