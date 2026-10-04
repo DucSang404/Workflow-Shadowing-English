@@ -34,6 +34,15 @@
   ],
   "history": [
     {
+      "topic": "asking for directions to the train station",
+      "runId": "20261004110030_hdv645",
+      "at": "2026-10-04T11:02:36.874Z",
+      "postsAt": "2026-10-04T12:00:00.000Z",
+      "published": true,
+      "postId": "6ac2324c11a7340ba023261f",
+      "error": null
+    },
+    {
       "topic": "ordering breakfast at a small cafe",
       "runId": "20261004085530_wjr8mv",
       "at": "2026-10-04T08:57:19.370Z",

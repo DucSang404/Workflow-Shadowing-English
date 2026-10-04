@@ -125,6 +125,31 @@ return [{
     // drift this pipeline exists to prevent.
     intro: body.intro !== false,
     introMs: Math.round(clamp(body.introMs, 600, 5000, 1200)),
+
+    // A spoken brand line over that card, so the channel is recognisable with the
+    // phone face-down. It is synthesised through the same Edge TTS path as the
+    // dialogue, which means it costs nothing extra and fails the same way.
+    //
+    // When it is spoken, `introMs` above stops being the intro length: 03_build_srt.js
+    // replaces it with the MEASURED duration of this line plus `introTailMs`. That
+    // keeps one number deciding both the prepended audio and every cue's offset,
+    // which is the whole reason the intro is whole milliseconds. `introMs` stays
+    // the fallback for a silent card (introLine: false, or the TTS call failing).
+    // `{brand}` and `{topic}` are substituted.
+    //
+    // The default names the topic and then tells the learner what to do with it,
+    // which is the job the opening actually has to do. The cost is that the line
+    // is as long as the topic is: measured on Edge TTS, naming the topic adds
+    // 1.4-2.4 s, so the opening is not the same length on every video.
+    introLine: body.introLine === false ? '' : String(
+      body.introLine ?? '{topic}. Listen, repeat and speak.',
+    ).trim().slice(0, 200),
+    // The dialogue is read at 0.9 so it can be repeated. The brand line is not
+    // repeated, so it is read at a normal pace - which also saves ~0.7 s.
+    introSpeed: clamp(body.introSpeed, 0.5, 1.5, 1.0),
+    // Breathing room between the brand line and the first sentence. Without it the
+    // learner gets no beat to settle before the first thing they must repeat.
+    introTailMs: Math.round(clamp(body.introTailMs, 0, 3000, 500)),
     brand: {
       name: String(body.brandName ?? 'ShawnSpace English'),
       // Warm amber on near-black: the highest-contrast pairing that still looks

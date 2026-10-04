@@ -143,8 +143,19 @@ if (primary) {
   // skips itself. Measured: a 1.2s card against a 2.5s gap did exactly that.
   const shortest = Math.min(record.gapSeconds, introSec || record.gapSeconds);
   const onsets = speechOnsets(primary.path, Math.max(0.4, shortest * 0.6), primary.actual);
-  if (onsets.length === cues.length) {
-    worstOnsetMs = Math.max(...cues.map((c, i) => Math.abs(onsets[i] - c.start) * 1000));
+
+  // A spoken brand line runs into the first sentence with only `introTailMs`
+  // between them, and that tail is shorter than the silence window this detector
+  // needs - so cue 1 has no boundary to find and the onsets line up against cues
+  // 2..N instead. Measured: the first silence in a voiced-intro run begins at
+  // 9.1 s, after cue 1 has already been spoken. Checking the rest still catches a
+  // uniform shift of the whole track, which is all this test is for.
+  const voicedIntro = Boolean(record.introVoiced);
+  const expected = voicedIntro ? cues.slice(1) : cues;
+
+  if (onsets.length === expected.length) {
+    worstOnsetMs = Math.max(...expected.map((c, i) => Math.abs(onsets[i] - c.start) * 1000));
+    if (voicedIntro) console.log('\n  (cue 1 onset is not measurable: the brand line runs straight into it)');
   } else if (musicOn) {
     // Expected, not a fault: the shadowing gaps are no longer digital silence
     // once a bed is playing under them, so the detector has nothing to find. The
@@ -154,7 +165,7 @@ if (primary) {
     console.log('\n  (onset check skipped: the music bed fills the gaps — '
       + 'rerun with {"music": false} to exercise it)');
   } else {
-    console.log(`\n  (onset check skipped: found ${onsets.length} speech starts for ${cues.length} cues)`);
+    console.log(`\n  (onset check skipped: found ${onsets.length} speech starts for ${expected.length} expected)`);
   }
 }
 

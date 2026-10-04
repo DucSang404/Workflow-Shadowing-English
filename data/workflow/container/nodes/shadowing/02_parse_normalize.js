@@ -133,14 +133,42 @@ const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
   .filter(Boolean)
   .slice(0, 8);
 
+// The spoken brand line that plays over the title card.
+//
+// It rides the existing TTS path as an extra item numbered 0, so it needs no new
+// node and no new credential, and a failure degrades exactly like a failed
+// sentence: no sent_000.mp3, probe_durations reports it missing, and the card
+// falls back to silence.
+//
+// It is deliberately NOT a member of `sentences`. Everything downstream treats
+// that array as the dialogue - fetch_scenes.js wants a picture per entry,
+// 03_build_srt.js wants a cue per entry - and the brand line is neither.
+const introText = cfg.intro && cfg.introLine
+  ? cfg.introLine.replace(/\{brand\}/gi, cfg.brand.name).replace(/\{topic\}/gi, cfg.topic).trim()
+  : '';
+const intro = introText
+  ? { idx: 0, en: introText, ttsText: normalizeForTts(introText) }
+  : null;
+
 // The manifest is the contract the container/cli/* scripts read: they take a
 // directory on argv and nothing else, so anything they need has to be in here.
 // fetch_music.js reads `music` the way fetch_scenes.js reads `sentences`.
 fs.writeFileSync(
   cfg.manifestPath,
   JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music,
-    imageSource: cfg.imageSource, caption, hashtags, coverPrompt, sentences }, null, 2),
+    imageSource: cfg.imageSource, caption, hashtags, coverPrompt, intro, sentences }, null, 2),
   'utf8',
 );
 
-return sentences.map((s) => ({ json: { ...s, voice: VOICES[s.speaker], speed: cfg.speed } }));
+const items = sentences.map((s) => ({ json: { ...s, voice: VOICES[s.speaker], speed: cfg.speed } }));
+if (intro) {
+  // `imageQuery` is carried only so the Pexels node downstream has a valid query
+  // instead of an empty one; 05_collect_pexels.js throws the result away.
+  items.unshift({
+    json: {
+      ...intro, isIntro: true, imageQuery: cfg.topic,
+      voice: VOICES.A, speed: cfg.introSpeed,
+    },
+  });
+}
+return items;

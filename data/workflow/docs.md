@@ -203,6 +203,28 @@ so sánh ở mục A) — đổi lấy ~4GB model và 20-40s mỗi ảnh.
 
 </details>
 
+### Câu thoại thương hiệu đầu video ✅ (2026-10-04)
+
+Title card trước đây im lặng; giờ có một câu đọc lên để nhận diện kênh.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `introLine` | `"Welcome to {brand}. Let's practice shadowing."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
+| `introSpeed` | `1.0` | Hội thoại đọc 0.9 để nhại theo; câu này không nhại nên đọc tốc độ thường |
+| `introTailMs` | `500` | Khoảng nghỉ trước câu đầu tiên |
+| `introMs` | `1200` | Giờ chỉ là **fallback** khi không có câu thoại |
+
+**Vì sao mặc định không đọc chủ đề**: đo trên Edge TTS, nhắc chủ đề tốn thêm
+**1.4–2.4s** *và độ dài thay đổi theo từng video* — ngược hẳn mục đích nhận diện,
+vốn cần mở đầu giống hệt nhau. Chủ đề đã hiện trên card và nằm trong caption.
+Muốn đọc thì thêm `{topic}` vào `introLine`.
+
+Đo thực tế với chủ đề *"a daily standup with the dev team"*: có chủ đề + tốc độ 0.9
+= **7484 ms**; mặc định hiện tại = **4628 ms**, và không đổi theo chủ đề.
+
+Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLine:false`, và câu
+tuỳ biến.
+
 ---
 
 ## Roadmap

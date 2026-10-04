@@ -24,6 +24,8 @@ for (let i = 0; i < $input.all().length; i += 1) {
   } catch {
     idx = undefined;
   }
+  // idx 0 is the spoken brand line, which rides this path only to keep the item
+  // indices aligned. It has no scene, so its search result is discarded.
   if (!idx) continue;
 
   if (item.json?.error) {

@@ -37,9 +37,24 @@ function srtTime(sec) {
 
 // The title card sits in front of everything, so every cue starts that much
 // later. This is the ONE place the offset is decided for the subtitles, and
-// build_video.js prepends exactly the same number of milliseconds of silence to
-// the audio - see the note on `introMs` in 01_prepare_run.js.
-const introSec = cfg.intro ? cfg.introMs / 1000 : 0;
+// build_video.js prepends exactly the same number of milliseconds to the audio
+// - see the note on `introMs` in 01_prepare_run.js.
+//
+// When the card has a spoken brand line, its MEASURED duration decides the
+// offset rather than the configured `introMs`: the audio has to be as long as
+// the words actually are. Rounded UP to a whole millisecond so the prepended
+// audio and the cue shift stay the same integer number of samples - at 24 kHz a
+// millisecond is exactly 24 of them. Rounding down would clip the last syllable.
+const introAudio = probe.intro ?? null;
+const introMs = (() => {
+  if (!cfg.intro) return 0;
+  if (!introAudio) return cfg.introMs;
+  const spoken = Math.ceil(introAudio.duration * 1000) + cfg.introTailMs;
+  // Never shorter than the card needs to be readable, never long enough to be a
+  // dead opening if the line somehow came back far too long.
+  return Math.min(Math.max(spoken, cfg.introMs), 15000);
+})();
+const introSec = introMs / 1000;
 
 let cursor = introSec;
 const cues = segments.map((seg, i) => {
@@ -98,7 +113,9 @@ const plan = {
   outputs: cfg.outputs,
   gapSeconds: gap,
   introSec,
-  introMs: cfg.intro ? cfg.introMs : 0,
+  introMs,
+  introWav: introAudio?.wav ?? null,
+  introLine: introAudio?.en ?? null,
   brand: cfg.brand,
   coverBackground,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
@@ -125,6 +142,9 @@ return [{
     skipped,
     scenes,
     scenesMissing,
+    introLine: introAudio?.en ?? null,
+    introMs,
+    introMissing: probe.introMissing ?? null,
     music,
     musicReason,
     introSec,

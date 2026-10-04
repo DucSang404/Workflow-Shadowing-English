@@ -544,19 +544,26 @@ thêm dữ liệu nào.
 
 - Dùng bản **`-plus-face`**: bản thường copy cả bố cục ảnh gốc, cho ra sáu bức
   chân dung giống hệt nhau thay vì sáu cảnh khác nhau.
-- `IP_SCALE` **0.55**. Cao hơn thì mọi cảnh co lại thành chân dung, mất bối cảnh
-  mà câu thoại đang nói tới.
+- `IP_SCALE` **0.40** — đây là mặc định trong `server.py`, đừng chép lại con số
+  ở đâu khác. Đo trên cùng prompt+seed: **0.55 nuốt mất phong cảnh** (nền trơn
+  của ảnh tham chiếu bị kéo sang), 0.28 giữ cảnh nhưng tóc trôi khỏi tham chiếu,
+  0.40 giữ được cả hai. Lý lẽ đầy đủ nằm ngay trong `server.py:82-91`.
 - Nạp **sau** `fuse_lora()`, không phải trước.
 - ⚠ **Giống, không phải trùng khít.** Tóc, mắt, trang phục giữ được qua các cảnh;
   khuôn mặt trôi nhẹ, và tóc nhân vật nam ngả tím so với xanh navy của ảnh gốc.
   Muốn khoá tuyệt đối thì phải train LoRA riêng cho nhân vật — việc khác hẳn.
 - Thay nhân vật = thay hai file PNG đó, không đụng code. Bản trước nằm ở
   `assets/characters/previous/`.
-- **Hai nhân vật hiện tại do chính pipeline sinh ra**, không lấy từ phim nào. Đã
-  cân nhắc dùng nhân vật Your Name và bỏ: đó là IP của CoMix Wave Films, dùng làm
-  dàn nhân vật cố định cho kênh công khai là rủi ro gỡ video, và nó buộc bản sắc
-  kênh phụ thuộc vào tài sản của người khác. Sinh nhân vật gốc theo cùng mỹ học
-  cho kết quả tương đương mà bạn sở hữu hoàn toàn.
+- **Nguồn gốc bộ nhân vật hiện tại (2026-10-04)**: cắt từ một khung phim Your Name
+  (`assets/characters/source.png`), theo yêu cầu rõ ràng của chủ kênh — mặt phải
+  giống ảnh gốc, không chế.
+  ⚠ **Rủi ro đã biết, không phải đã giải quyết**: đó là IP của CoMix Wave Films.
+  Dùng làm dàn nhân vật cố định cho một kênh đăng công khai hằng ngày có rủi ro bị
+  gỡ video, và buộc bản sắc kênh phụ thuộc tài sản của người khác. Trước đó bộ
+  nhân vật do chính pipeline sinh ra nên không vướng điều này; bản cũ còn ở
+  `assets/characters/previous/` nếu cần quay lại.
+  Muốn vừa giống mỹ học vừa sở hữu hoàn toàn thì sinh nhân vật gốc theo cùng phong
+  cách — gọi `/generate` không truyền `character`.
 - **Sinh nhân vật mới**: gọi `/generate` **không truyền `character`**. Nhớ là một
   khi IP-Adapter đã nạp thì UNet luôn đòi `image_embeds`, nên server tự đưa ảnh
   trắng với scale 0 — thiếu cái đó là vỡ với
@@ -637,6 +644,28 @@ Rút ra khi làm `fetch_scenes.js`, cả ba đều làm mất ảnh một cách 
   Cắt ngược lại ra `"printed hotel"` và trả về tranh khắc Hôtel des Invalides.
 - **HTTP 200 không chứng minh đó là ảnh.** Trang lỗi cũng tải về ngon lành.
   Luôn để `ffmpeg`/`ffprobe` decode lại rồi mới tin.
+
+**Câu thoại thương hiệu đầu video.** Nó đi qua **đúng đường TTS của hội thoại**, như
+một item `idx 0`, nên không cần node mới và hỏng thì suy biến y hệt một câu hỏng
+(không có `sent_000.mp3` → card im lặng, dùng lại `introMs` cấu hình).
+
+Nó **không** nằm trong `manifest.sentences`. Mọi thứ phía sau coi mảng đó là hội
+thoại: `fetch_scenes.js` đòi một ảnh cho mỗi phần tử, `03_build_srt.js` đòi một
+cue cho mỗi phần tử. Câu thương hiệu không phải cả hai.
+
+Khi có câu thoại, **độ dài đo được của nó thay thế `introMs` cấu hình** — audio
+phải dài đúng bằng số chữ thực sự đọc ra. Làm tròn **lên** mili-giây nguyên: ở
+24 kHz một mili-giây là đúng 24 sample, làm tròn xuống thì cụt âm cuối.
+
+⚠️ **Pad bằng `apad=whole_len` (đếm sample), tuyệt đối không dùng `whole_dur`.**
+Đo trên bản ffmpeg này: input 24000 sample, `whole_dur=2.0` ra **48017**, còn
+`whole_len=48000` ra **đúng 48000**. Lệch 17 sample thì không ai nghe thấy — và
+đó chính là lý do không được phép để nó bắt đầu.
+
+Phụ lưu ý: khi intro có tiếng, **cue 1 không còn ranh giới im lặng phía trước**
+(khoảng `introTailMs` ngắn hơn cửa sổ dò của `silencedetect`), nên
+`verify-sync.js` đối chiếu onset với cue 2..N và in rõ điều đó. Đừng "sửa" bằng
+cách hạ ngưỡng dò — sẽ bắt nhầm các quãng ngắt giữa câu.
 
 **Index của câu sau node TTS.** HTTP Request node thay `json` bằng binary response,
 nên `$json.idx` biến mất. `Write Sentence Audio` lấy lại qua paired item:

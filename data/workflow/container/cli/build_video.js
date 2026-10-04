@@ -66,20 +66,43 @@ const chain = segs.map((_, i) => `[a${i}]`).join('');
 // 03_build_srt.js applied to every cue. A fractional offset here would be the
 // start of exactly the drift this pipeline is built to prevent.
 const introMs = plan.introMs ?? 0;
-const delay = introMs ? `,adelay=${introMs}` : '';
+const introSamples = Math.round((introMs / 1000) * SR);
 
-ffmpeg([...voiceInputs, '-filter_complex',
-  `${pads};${chain}concat=n=${segs.length}:v=0:a=1${delay}[aout]`,
+// The card is either silent or carries a spoken brand line. Both occupy exactly
+// `introMs`, so the rest of the timeline cannot tell the difference.
+//
+// The spoken case pads with `apad=whole_len`, a SAMPLE count, not `whole_dur`:
+// given a 24000-sample input and whole_dur=2.0 this build returns 48017 samples,
+// while whole_len=48000 returns exactly 48000. A seventeen-sample slip is
+// inaudible and would never be noticed - which is precisely why it must not be
+// allowed to start.
+const hasIntroVoice = Boolean(introMs && plan.introWav && fs.existsSync(plan.introWav));
+
+let voiceGraph;
+let allVoiceInputs = voiceInputs;
+if (hasIntroVoice) {
+  const i = segs.length; // the intro is appended last but concatenated first
+  allVoiceInputs = [...voiceInputs, '-i', plan.introWav];
+  voiceGraph = `${pads};[${i}:a]apad=whole_len=${introSamples},aresample=${SR}[intro];`
+    + `[intro]${chain}concat=n=${segs.length + 1}:v=0:a=1[aout]`;
+} else {
+  const delay = introMs ? `,adelay=${introMs}` : '';
+  voiceGraph = `${pads};${chain}concat=n=${segs.length}:v=0:a=1${delay}[aout]`;
+}
+
+ffmpeg([...allVoiceInputs, '-filter_complex', voiceGraph,
   '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', voicePath]);
 
-// Cheap, and it catches the one mistake that matters: if adelay ever rounded,
-// every subtitle would be off by that much for the whole video.
+// Cheap, and it catches the one mistake that matters: if the lead-in is not
+// exactly `introMs` long, every subtitle is off by the difference for the whole
+// video. It covers both shapes - adelay silence and a padded spoken line - by
+// measuring what actually came out rather than trusting either filter.
 if (introMs) {
-  const want = Math.round((introMs / 1000) * SR);
+  const want = introSamples;
   const got = sampleCount(voicePath) - segs.reduce((n, sg) => n + Math.round(sg.duration * SR)
     + Math.round(gapSeconds * SR), 0);
   if (Math.abs(got - want) > SR / 100) {
-    console.error(`intro silence is ${got} samples, expected about ${want}`);
+    console.error(`intro lead-in is ${got} samples, expected about ${want}`);
     process.exit(3);
   }
 }
@@ -715,6 +738,7 @@ process.stdout.write(JSON.stringify({
   durationSec: Math.round(durationSec * 100) / 100,
   sizeBytes: rendered[0].sizeBytes,
   introSec,
+  introVoiced: hasIntroVoice,
   audio: {
     sampleRate: SR,
     voiceSamples,

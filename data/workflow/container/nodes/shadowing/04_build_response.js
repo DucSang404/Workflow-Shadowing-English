@@ -48,6 +48,11 @@ try {
     // The title card shifts every cue by this much; host/verify-sync.js needs it
     // to know where cue 1 is supposed to start.
     introSec: srt.introSec ?? 0,
+    // host/verify-sync.js needs these: a spoken brand line runs straight into the
+    // first sentence, so cue 1 has no detectable silence in front of it.
+    introLine: srt.introLine ?? null,
+    introMs: srt.introMs ?? 0,
+    introVoiced: Boolean(srt.introLine),
     brand: cfg.brand,
     voices: { A: cfg.voiceA, B: cfg.voiceB },
     speed: cfg.speed,
@@ -66,6 +71,12 @@ try {
     music: built.music ?? null,
     loudness: built.loudness,
     skippedSentences: srt.skipped,
+    intro: {
+      line: srt.introLine,
+      ms: srt.introMs,
+      // Present only when the brand line failed TTS and the card fell back to silence.
+      missing: srt.introMissing ?? null,
+    },
   }, null, 2), 'utf8');
 
   if (!cfg.keepWorkDir) {
@@ -104,6 +115,12 @@ return [{
       ? { ...built.music, lookup: srt.musicReason ?? null }
       : { used: false, reason: srt.musicReason ?? 'no music' },
     skippedSentences: srt.skipped,
+    intro: {
+      line: srt.introLine,
+      ms: srt.introMs,
+      // Present only when the brand line failed TTS and the card fell back to silence.
+      missing: srt.introMissing ?? null,
+    },
     scenes: {
       used: (srt.scenes ?? []).length,
       missing: srt.scenesMissing ?? [],
