@@ -240,7 +240,7 @@ kênh. Nền là ảnh bối cảnh làm tối, dùng chung với thẻ mở đ�
 | `outro` | `true` | `false` = không có trang kết |
 | `outroMs` | `3000` | 1000–8000, số nguyên mili-giây |
 | `outroTitle` | `"Thanks for watching!"` | Dòng lớn, chữ trắng |
-| `outroCta` | `"Follow {brand} for a new lesson every day"` | Dòng màu nhấn; `{brand}` được thay |
+| `outroCta` | `"Follow {brand} for a new lesson every day"` | Chữ trắng; chỗ `{brand}` được tách ra một dòng riêng thành **badge** (chữ tối trên nền màu nhấn) để tên kênh nổi bật. Không có `{brand}` thì cả dòng là chữ thường |
 
 Trang kết nằm **sau mọi cue** nên không dịch phụ đề nào, chỉ làm file dài thêm.
 Audio được nối thêm đúng `outroMs × 24` sample im lặng (`apad=pad_len`, đếm sample),

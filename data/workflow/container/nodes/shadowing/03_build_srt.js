@@ -124,7 +124,9 @@ const plan = {
   introLine: introAudio?.en ?? null,
   outroMs,
   outroTitle: withBrand(cfg.outroTitle),
-  outroCta: withBrand(cfg.outroCta),
+  // Left with `{brand}` in it: build_video.js lifts the channel name out of this
+  // line and sets it as a badge, and needs to know where it was.
+  outroCta: String(cfg.outroCta ?? '').trim(),
   brand: cfg.brand,
   coverBackground,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),

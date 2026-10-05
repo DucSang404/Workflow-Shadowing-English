@@ -476,17 +476,35 @@ function renderCard(width, height) {
  * Drawn on the same dimmed backdrop as the title card, so the video opens and
  * closes on the same picture. Same type, colours and safe area too, so the two
  * read as one series.
+ *
+ * The channel name is the one thing on this card the viewer has to remember, so
+ * it is pulled out of the follow line onto its own row and set as a badge - dark
+ * type on an accent box - while the copy around it stays white. The CTA arrives
+ * with `{brand}` still in it for exactly this reason; without the placeholder it
+ * is all plain copy.
  */
 function renderOutroCard(width, height) {
   const portrait = height > width;
   const accent = String(plan.brand?.accent ?? '#F5B544').replace('#', '0x');
+  const brandName = String(plan.brand?.name ?? '').trim();
   const cardPath = path.join(workDir, `outro_${width}x${height}.png`);
 
-  const titleLines = wrapTitle(String(plan.outroTitle ?? '').toUpperCase(), portrait ? 12 : 20, 3);
-  const ctaLines = wrapTitle(String(plan.outroCta ?? '').toUpperCase(), portrait ? 18 : 30, 3);
+  const caps = (str) => String(str ?? '').replace(/\{brand\}/gi, brandName).trim().toUpperCase();
+  const cta = String(plan.outroCta ?? '');
+  const split = brandName ? cta.match(/^([\s\S]*?)\{brand\}([\s\S]*)$/i) : null;
+  const ctaChars = portrait ? 18 : 30;
+
+  const titleLines = wrapTitle(caps(plan.outroTitle), portrait ? 12 : 20, 3);
+  const beforeLines = wrapTitle(caps(split ? split[1] : cta), ctaChars, 3);
+  const brandLines = split ? wrapTitle(brandName.toUpperCase(), ctaChars, 2) : [];
+  const afterLines = split ? wrapTitle(caps(split[2]), ctaChars, 3) : [];
+
   const longest = (lines) => Math.max(...lines.map((l) => [...l].length), 1);
   const titlePx = fitCaps(width, longest(titleLines), width * (portrait ? 0.10 : 0.072));
-  const ctaPx = fitCaps(width, longest(ctaLines), width * (portrait ? 0.052 : 0.036));
+  const ctaPx = fitCaps(width, longest([...beforeLines, ...afterLines]), width * (portrait ? 0.052 : 0.036));
+  // Two characters of allowance for the box's side padding, so the badge - not
+  // just its text - stays inside the safe width.
+  const brandPx = fitCaps(width, longest(brandLines) + 2, width * (portrait ? 0.064 : 0.046));
 
   // One file per line so each centres on its own - see the note in renderCard.
   const writeLines = (lines, name) => lines.map((line, i) => {
@@ -494,37 +512,80 @@ function renderOutroCard(width, height) {
     writeTextFile(file, [line]);
     return file;
   });
-  const titleFiles = writeLines(titleLines, 'title');
-  const ctaFiles = writeLines(ctaLines, 'cta');
 
-  // Measured in JS and centred as a block, for the same reason as the title card.
+  // Each row knows its own height and how to draw itself at a given top, so the
+  // whole stack can be measured in JS and centred as a block, for the same reason
+  // as the title card.
   const LINE = 1.18;
-  const titleStep = Math.round(titlePx * LINE + titlePx * 0.22);
-  const ctaStep = Math.round(ctaPx * LINE + ctaPx * 0.22);
-  const titleH = Math.max(0, titleFiles.length * titleStep - Math.round(titlePx * 0.22));
-  const ctaH = Math.max(0, ctaFiles.length * ctaStep - Math.round(ctaPx * 0.22));
+  const textRow = (lines, name, px, colour) => {
+    if (!lines.length) return null;
+    const lead = Math.round(px * 0.22);
+    const step = Math.round(px * LINE) + lead;
+    const files = writeLines(lines, name);
+    return {
+      h: files.length * step - lead,
+      draw: (top) => files.map((file, i) => cardText(file, px, colour, top + i * step)),
+    };
+  };
+  const badgeRow = (lines, px) => {
+    if (!lines.length) return null;
+    const padY = Math.round(px * 0.30);
+    const padX = Math.round(px * 0.55);
+    const lead = Math.round(px * 0.18);
+    const step = Math.round(px * LINE) + 2 * padY + lead;
+    const files = writeLines(lines, 'brand');
+    return {
+      h: files.length * step - lead,
+      // drawtext sizes the box to the text, so no width has to be guessed. No
+      // outline: dark type on a solid box is already the highest contrast here.
+      draw: (top) => files.map((file, i) => [
+        `drawtext=fontfile='${escapeFilterPath(COVER_FONT_BOLD)}'`,
+        `textfile='${escapeFilterPath(file)}'`,
+        'fontcolor=0x0E1014',
+        `fontsize=${px}`,
+        'box=1',
+        `boxcolor=${accent}`,
+        `boxborderw=${padY}|${padX}`,
+        'x=(w-text_w)/2',
+        `y=${top + padY + i * step}`,
+      ].join(':')),
+    };
+  };
+
   const ruleH = Math.max(3, Math.round(height * 0.0035));
   const ruleW = Math.round(width * 0.14);
-  const gap = Math.round(height * 0.032);
+  const rule = {
+    h: ruleH,
+    // x computed here, never `(w-N)/2` - drawbox reads `w` as 0 at configure time.
+    draw: (top) => [`drawbox=x=${Math.round((width - ruleW) / 2)}:y=${top}:w=${ruleW}:h=${ruleH}:color=${accent}:t=fill`],
+  };
 
-  const blockH = titleH + gap + ruleH + gap + ctaH;
+  const gap = Math.round(height * 0.032);
+  const tight = Math.round(height * 0.016);
+  // [row, space after it]; rows with nothing to say drop out with their space.
+  const stack = [
+    [textRow(titleLines, 'title', titlePx, 'white'), gap],
+    [rule, gap],
+    [textRow(beforeLines, 'before', ctaPx, 'white'), tight],
+    [badgeRow(brandLines, brandPx), tight],
+    [textRow(afterLines, 'after', ctaPx, 'white'), 0],
+  ].filter(([row]) => row);
+
+  const blockH = stack.reduce((n, [row, after], i) => n + row.h + (i < stack.length - 1 ? after : 0), 0);
   // Slightly above centre, clear of TikTok's caption and button rail.
-  const titleY = Math.round(height * 0.44 - blockH / 2);
-  const ruleY = titleY + titleH + gap;
-  const ctaY = ruleY + ruleH + gap;
+  let y = Math.round(height * 0.44 - blockH / 2);
+  const filters = stack.flatMap(([row, after]) => {
+    const drawn = row.draw(y);
+    y += row.h + after;
+    return drawn;
+  });
 
   const { base, dim } = cardBackdrop(width, height);
 
   ffmpeg([
     ...base,
     '-frames:v', '1',
-    '-vf', [
-      ...dim,
-      ...titleFiles.map((file, i) => cardText(file, titlePx, 'white', titleY + i * titleStep)),
-      // x computed here, never `(w-N)/2` - drawbox reads `w` as 0 at configure time.
-      `drawbox=x=${Math.round((width - ruleW) / 2)}:y=${ruleY}:w=${ruleW}:h=${ruleH}:color=${accent}:t=fill`,
-      ...ctaFiles.map((file, i) => cardText(file, ctaPx, accent, ctaY + i * ctaStep)),
-    ].join(','),
+    '-vf', [...dim, ...filters].join(','),
     cardPath,
   ]);
 
