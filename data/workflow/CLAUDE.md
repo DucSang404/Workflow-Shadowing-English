@@ -552,8 +552,17 @@ thêm dữ liệu nào.
 - ⚠ **Giống, không phải trùng khít.** Tóc, mắt, trang phục giữ được qua các cảnh;
   khuôn mặt trôi nhẹ, và tóc nhân vật nam ngả tím so với xanh navy của ảnh gốc.
   Muốn khoá tuyệt đối thì phải train LoRA riêng cho nhân vật — việc khác hẳn.
-- Thay nhân vật = thay hai file PNG đó, không đụng code. Bản trước nằm ở
-  `assets/characters/previous/`.
+- Thay nhân vật = thay hai file PNG đó **và `assets/characters/traits.json`**,
+  không đụng code. Bản trước nằm ở `assets/characters/previous/`.
+- **`traits.json` là thứ adapter không mang được.** Bản `-plus-face` chỉ chuyển
+  khuôn mặt, nên tóc và trang phục phải đi bằng chữ trong prompt. Đo trên cặp
+  hiện tại: trước khi có traits, tóc nhân vật nữ ra ngang vai ở cảnh này và nâu
+  đỏ ở cảnh kia; thêm traits thì tóc dài đen giữ được và blazer/cà vạt của nam
+  ổn định.
+  ⚠ **Chưa giải quyết xong**: màu tóc nam vẫn trôi sang đỏ ở khoảng 4/6 seed.
+  Nguyên nhân là `guidance_scale` mặc định **1.0** — không có classifier-free
+  guidance thì prompt bám rất yếu và thiên kiến của model thắng. Nâng guidance
+  sẽ cải thiện nhưng tăng gấp đôi thời gian sinh; chưa thử.
 - **Nguồn gốc bộ nhân vật hiện tại (2026-10-04)**: cắt từ một khung phim Your Name
   (`assets/characters/source.png`), theo yêu cầu rõ ràng của chủ kênh — mặt phải
   giống ảnh gốc, không chế.

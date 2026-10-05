@@ -225,6 +225,34 @@ Muốn đọc thì thêm `{topic}` vào `introLine`.
 Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLine:false`, và câu
 tuỳ biến.
 
+### Đăng 2 video/ngày + kho chủ đề 124 + sửa lỗi picker ✅ (2026-10-04)
+
+**Lịch**: `daily` giờ có **hai trigger — 07:00 và 19:00 ICT**, dựng trước mỗi slot
+một tiếng, Buffer đăng lúc **08:00 và 20:00**. Slot do `01_pick_topic.js` chọn
+**theo đồng hồ**, không theo trigger nào vừa chạy, nên một lần chạy tay hoặc một
+build trễ vẫn nhắm vào slot kế tiếp chưa qua thay vì đưa Buffer một mốc quá khứ.
+Đã kiểm lúc 23:55 ICT: tự chuyển sang 08:00 hôm sau.
+
+**Kho chủ đề**: 30 → **124** (thêm 94, đã khử trùng lặp). Ở nhịp 2 video/ngày là
+**62 ngày** mới quay vòng. Nhóm mới gồm công việc/IT, y tế, du lịch, mua sắm, học
+hành, xã giao.
+
+**Sửa lỗi picker — bắt buộc phải làm cùng lúc.** `rank()` trả thẳng `indexOf` trên
+`history` vốn **newest-first**, nên index nhỏ = *mới dùng*, và sort tăng dần chọn
+đúng cái vừa dùng. Khi mọi chủ đề đã chạy một lượt, kênh sẽ đăng **một chủ đề duy
+nhất mãi mãi**, không lỗi nào bắn ra. Tăng lên 2 video/ngày khiến nó cắn nhanh gấp
+đôi.
+
+Đã sửa thành `-i` (và `-Infinity` cho chủ đề chưa dùng), chứng minh bằng mô phỏng:
+
+| | kết quả |
+|---|---|
+| pool 3, chạy 12 lần | `c a b c a b c a b c a b` — mỗi chủ đề 4 lần |
+| pool 5, chạy 25 lần | khoảng cách lặp gần nhất = **5** = đúng kích thước pool |
+
+Chủ đề **chưa từng dùng** được chọn ngẫu nhiên trong nhóm đó thay vì theo thứ tự
+file, để một lô vừa thêm không đi ra thành khối liền nhau.
+
 ---
 
 ## Roadmap

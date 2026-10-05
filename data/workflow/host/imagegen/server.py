@@ -29,6 +29,7 @@ receives are concrete noun phrases ("cafe counter coffee croissant"), which is
 what SD 1.5 is good at.
 """
 import io
+import json
 import os
 import time
 
@@ -157,6 +158,33 @@ def character_image(name):
     return Image.open(path).convert("RGB")
 
 
+def character_traits(name):
+    """
+    A few words describing the character, pasted into the prompt.
+
+    The IP-Adapter in use is `-plus-face`: it transfers the FACE and nothing else.
+    That is enough for a character whose face is the recognisable part, and not
+    enough for one recognised by their hair - measured on the current pair, the
+    girl came back with shoulder-length hair in one scene and auburn hair in
+    another while the boy held. Words carry what the adapter cannot: the adapter
+    keeps the face, the prompt keeps the hair and the clothes.
+
+    Lives in assets/characters/traits.json, beside the portraits, so swapping
+    characters is still "replace the files, touch no code". Read per request, so
+    editing it does not need a restart. Absent or malformed means no traits - the
+    old behaviour exactly, never an error.
+    """
+    if not name:
+        return ""
+    try:
+        with open(os.path.join(CHARACTER_DIR, "traits.json"), encoding="utf-8") as fh:
+            table = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    value = table.get(str(name).strip().upper())
+    return str(value).strip() if isinstance(value, str) else ""
+
+
 class Req(BaseModel):
     prompt: str
     # "A" or "B". The dialogue already alternates speakers, so this arrives for
@@ -239,6 +267,7 @@ def generate(req: Req):
 
     style = STYLE if req.style is None else req.style
     reference = character_image(req.character)
+    traits = character_traits(req.character)
     extra = {}
 
     # Once an IP-Adapter is loaded the UNet ALWAYS expects image embeddings -
@@ -254,7 +283,9 @@ def generate(req: Req):
             else (req.ipScale if req.ipScale is not None else IP_SCALE))
 
     image = p(
-        prompt=f"{req.prompt.strip()}, {style}".rstrip(", "),
+        # Traits sit between the scene and the style: close enough to the subject
+        # to attach to it, before the style words that would otherwise dominate.
+        prompt=", ".join(x for x in (req.prompt.strip(), traits, style) if x).rstrip(", "),
         negative_prompt=req.negative if req.negative is not None else NEGATIVE,
         width=req.width or WIDTH,
         height=req.height or HEIGHT,

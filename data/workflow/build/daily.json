@@ -4,7 +4,7 @@
   "nodes": [
     {
       "id": "dy-cron",
-      "name": "Every Day",
+      "name": "Twice Daily",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -17,7 +17,13 @@
             {
               "field": "days",
               "daysInterval": 1,
-              "triggerAtHour": 18,
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            },
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 19,
               "triggerAtMinute": 0
             }
           ]
@@ -35,7 +41,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Chooses the day's topic and the time it should go out.\n//\n// Least recently used, not random: random repeats itself far sooner than people\n// expect, and a learning channel that posts the same situation twice in a week\n// looks abandoned. The pool cycles on its own and can be edited at any time\n// without touching this file.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\nconst FILE = `${ROOT}/topics.json`;\n\nconst cfg = JSON.parse(fs.readFileSync(FILE, 'utf8'));\nconst pool = (cfg.pool ?? []).filter((t) => typeof t === 'string' && t.trim());\nif (!pool.length) throw new Error('topics.json has an empty pool');\n\n// history is newest-first, so position in it IS recency. A topic that has never\n// run is not in the list at all and sorts ahead of everything that has.\nconst history = (cfg.history ?? []).map((h) => h.topic);\nconst rank = (t) => {\n  const i = history.indexOf(t);\n  return i === -1 ? -1 : i;\n};\nconst topic = [...pool].sort((a, b) => rank(a) - rank(b))[0];\n\n// 19:00 Asia/Ho_Chi_Minh, expressed as the UTC instant Buffer wants. ICT is\n// UTC+7 all year - Vietnam has no daylight saving - so this is a fixed offset\n// rather than a timezone library.\nconst ICT_OFFSET_HOURS = 7;\nconst POST_HOUR_ICT = Number($json.postHourIct ?? 19);\n\nconst nowIct = new Date(Date.now() + ICT_OFFSET_HOURS * 3600_000);\nconst y = nowIct.getUTCFullYear();\nconst m = String(nowIct.getUTCMonth() + 1).padStart(2, '0');\nconst d = String(nowIct.getUTCDate()).padStart(2, '0');\nconst dueAt = new Date(Date.UTC(y, nowIct.getUTCMonth(), nowIct.getUTCDate(),\n  POST_HOUR_ICT - ICT_OFFSET_HOURS, 0, 0));\n\n// If the build ran late and 19:00 has already gone, aim at tomorrow rather than\n// handing Buffer a time in the past.\nif (dueAt.getTime() < Date.now() + 5 * 60_000) dueAt.setUTCDate(dueAt.getUTCDate() + 1);\n\nreturn [{\n  json: {\n    topic,\n    dueAt: dueAt.toISOString(),\n    postsAtIct: `${y}-${m}-${d} ${String(POST_HOUR_ICT).padStart(2, '0')}:00 ICT`,\n    everRun: history.length,\n  },\n}];\n"
+        "jsCode": "// Chooses the topic for this run and the time its video should go out.\n//\n// Least recently used, not random: random repeats itself far sooner than people\n// expect, and a learning channel that posts the same situation twice in a week\n// looks abandoned. The pool cycles on its own and can be edited at any time\n// without touching this file.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\nconst FILE = `${ROOT}/topics.json`;\n\n// The slots a video can be scheduled into, in ICT. Two a day.\nconst POST_HOURS = [8, 20];\nconst ICT_OFFSET_HOURS = 7;\n\nconst cfg = JSON.parse(fs.readFileSync(FILE, 'utf8'));\nconst pool = (cfg.pool ?? []).filter((t) => typeof t === 'string' && t.trim());\nif (!pool.length) throw new Error('topics.json has an empty pool');\n\n// ---------------------------------------------------------------- topic ----\n// `history` is newest-first, so a SMALL index means recently used and a LARGE\n// index means long ago. Ranking by the index itself therefore picks the topic\n// used most recently - which, once every topic has run once, is whichever one\n// ran last, forever. Negating it puts the oldest first, which is the whole\n// point of the pool.\n//\n// Never-run topics outrank everything (nothing is less recent than never), and\n// they are picked from at random rather than in file order, so a freshly\n// appended batch does not go out as a visibly contiguous block.\nconst history = (cfg.history ?? []).map((h) => h.topic);\nconst rank = (t) => {\n  const i = history.indexOf(t);\n  return i === -1 ? -Infinity : -i;\n};\n\nconst best = pool.reduce((lowest, t) => Math.min(lowest, rank(t)), Infinity);\nconst candidates = pool.filter((t) => rank(t) === best);\nconst topic = candidates[Math.floor(Math.random() * candidates.length)];\n\n// ----------------------------------------------------------------- when ----\n// Aim at the next slot that has not already passed. The build runs about an\n// hour ahead of its slot, but a late or retried build must not hand Buffer a\n// time in the past, so the slot is chosen from the clock rather than from which\n// schedule trigger happened to fire.\nconst SAFETY_MS = 5 * 60_000;\nconst nowIct = new Date(Date.now() + ICT_OFFSET_HOURS * 3600_000);\n\nconst slotFor = (hour, dayOffset) => new Date(Date.UTC(\n  nowIct.getUTCFullYear(), nowIct.getUTCMonth(), nowIct.getUTCDate() + dayOffset,\n  hour - ICT_OFFSET_HOURS, 0, 0,\n));\n\nconst dueAt = [...POST_HOURS.map((h) => slotFor(h, 0)), slotFor(POST_HOURS[0], 1)]\n  .find((d) => d.getTime() >= Date.now() + SAFETY_MS);\n\nconst slotIct = new Date(dueAt.getTime() + ICT_OFFSET_HOURS * 3600_000);\nconst pad = (n) => String(n).padStart(2, '0');\n\nreturn [{\n  json: {\n    topic,\n    dueAt: dueAt.toISOString(),\n    postsAtIct: `${slotIct.getUTCFullYear()}-${pad(slotIct.getUTCMonth() + 1)}-${pad(slotIct.getUTCDate())}`\n      + ` ${pad(slotIct.getUTCHours())}:00 ICT`,\n    everRun: history.length,\n    poolSize: pool.length,\n    // How many topics are tied for \"least recently used\" right now. While this\n    // is large the pool is still being worked through for the first time.\n    freshCandidates: candidates.length,\n  },\n}];\n"
       }
     },
     {
@@ -131,7 +137,7 @@
     }
   ],
   "connections": {
-    "Every Day": {
+    "Twice Daily": {
       "main": [
         [
           {

@@ -1,8 +1,9 @@
 /**
- * One video a day, posted to TikTok at 19:00 Asia/Ho_Chi_Minh.
+ * Two videos a day, posted to TikTok at 08:00 and 20:00 Asia/Ho_Chi_Minh.
  *
- * Builds at 18:00 and schedules the post for 19:00 the same day. The hour of
- * slack is deliberate: a build takes about 100 seconds when everything behaves,
+ * Builds an hour ahead of each slot and hands Buffer the slot as an explicit
+ * `dueAt`. The hour of slack is deliberate: a build takes about 100 seconds when
+ * everything behaves,
  * but it reaches out to Groq, an image model and S3, and any of those can be
  * slow. Posting is handed to Buffer with an explicit `dueAt`, so even a build
  * that overruns still goes out on time.
@@ -13,7 +14,10 @@
  * trust.
  *
  * Can also be run by hand from the n8n UI - the schedule is the only trigger,
- * but "Execute workflow" does the same thing immediately.
+ * but "Execute workflow" does the same thing immediately. A manual run aims at
+ * the next slot that has not passed, so it does not collide with the scheduled
+ * one; 01_pick_topic.js decides that from the clock rather than from which
+ * trigger fired.
  */
 const fs = require('fs');
 const path = require('path');
@@ -25,14 +29,17 @@ const nodeCode = (file) =>
 // Local, because n8n is calling its own webhooks from inside the same container.
 const SELF = 'http://localhost:5678/webhook';
 
-const BUILD_HOUR_ICT = 18;
+// One build per slot, each an hour before it. The slots themselves live in
+// container/nodes/daily/01_pick_topic.js (POST_HOURS) because that is what
+// computes `dueAt`; change them together.
+const BUILD_HOURS_ICT = [7, 19];
 
-const CHAIN = ['Every Day', 'Pick Topic', 'Build Video', 'Built?', 'Publish To Buffer',
+const CHAIN = ['Twice Daily', 'Pick Topic', 'Build Video', 'Built?', 'Publish To Buffer',
   'Record Run'];
 const to = (node) => [{ node, type: 'main', index: 0 }];
 
 const CONNECTIONS = {
-  'Every Day': { main: [to('Pick Topic')] },
+  'Twice Daily': { main: [to('Pick Topic')] },
   'Pick Topic': { main: [to('Build Video')] },
   'Build Video': { main: [to('Built?')] },
   // A failed build must not reach Buffer: posting nothing is better than posting
@@ -47,14 +54,18 @@ function definition() {
   const nodes = [
     {
       id: 'dy-cron',
-      name: 'Every Day',
+      name: 'Twice Daily',
       type: 'n8n-nodes-base.scheduleTrigger',
       typeVersion: 1.2,
-      position: at('Every Day'),
+      position: at('Twice Daily'),
       // The workflow's own timezone setting is Asia/Ho_Chi_Minh, so this hour is
       // local and does not drift with daylight saving anywhere else.
       parameters: {
-        rule: { interval: [{ field: 'days', daysInterval: 1, triggerAtHour: BUILD_HOUR_ICT, triggerAtMinute: 0 }] },
+        rule: {
+          interval: BUILD_HOURS_ICT.map((hour) => ({
+            field: 'days', daysInterval: 1, triggerAtHour: hour, triggerAtMinute: 0,
+          })),
+        },
       },
     },
     {
