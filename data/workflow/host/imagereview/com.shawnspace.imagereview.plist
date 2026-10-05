@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keeps the scene reviewer running so the 07:00 and 19:00 builds always have it.
+
+  Install:
+    cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.shawnspace.imagereview.plist
+
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.shawnspace.imagereview.plist
+
+  A LaunchAgent, not a LaunchDaemon: it has to run as you, inside your login
+  session, because that is where the `claude` CLI finds its login. Without it a
+  scheduled run finds no reviewer and ships the first draw of every scene - the
+  video still goes out, just unreviewed.
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.shawnspace.imagereview</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>exec node /Users/sangnguyen/Projects/ad-test/data/workflow/host/imagereview/server.js</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/imagereview.log</string>
+  <key>StandardErrorPath</key><string>/tmp/imagereview.log</string>
+</dict></plist>

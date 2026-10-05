@@ -63,6 +63,8 @@ try {
     sentences: manifest.sentences,
     segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),
     scenes: srt.scenes,
+    // Claude's verdict on the title-card backdrop; each scene carries its own.
+    coverReview: srt.coverReview ?? null,
     caption: manifest.caption ?? null,
     hashtags: manifest.hashtags ?? [],
     outputs: built.outputs,
@@ -130,6 +132,12 @@ return [{
       missing: srt.scenesMissing ?? [],
       // Only CC BY images oblige a credit line; cc0 and Pexels do not.
       attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),
+      // `off` means no reviewer answered, so every still went out unreviewed.
+      reviewer: srt.reviewer ?? 'off',
+      passed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === true).length,
+      failed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === false)
+        .map((sc) => ({ idx: sc.idx, score: sc.review.score, missing: sc.review.missing })),
+      redraws: (srt.scenes ?? []).reduce((n, sc) => n + Math.max(0, (sc.review?.draws ?? 1) - 1), 0),
     },
     coverError: built.coverError ?? null,
     workDirCleaned: cleaned,

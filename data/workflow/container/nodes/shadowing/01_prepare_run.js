@@ -110,6 +110,10 @@ return [{
     imageSource: ['auto', 'ai', 'stock'].includes(String(body.imageSource ?? '').toLowerCase())
       ? String(body.imageSource).toLowerCase()
       : 'auto',
+    // Claude reviews each generated still against its line and redraws the ones
+    // that miss (host/imagereview). Only matters when the generator is up, and a
+    // reviewer that is not running is skipped the same way. Off by request only.
+    reviewImages: body.reviewImages !== false,
 
     // The branded title card burned onto the front of the video.
     //

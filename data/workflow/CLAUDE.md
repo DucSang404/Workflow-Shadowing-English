@@ -18,6 +18,7 @@ viết code cho môi trường A rồi chạy ở môi trường B. Cây thư m�
 | `container/nodes/` | Trong task runner của n8n, nội dung Code node | `node` + builtin trong `NODE_FUNCTION_ALLOW_BUILTIN` |
 | `infra/` | Không chạy — định nghĩa image | — |
 | `host/imagegen/` | macOS, **Python qua `uv`**, GPU Metal | torch + diffusers |
+| `host/imagereview/` | macOS, Node, gọi CLI `claude` đã đăng nhập | `claude -p` |
 
 ### ⛔ Ràng buộc của container (đọc kỹ trước khi viết `container/**`)
 
@@ -66,6 +67,8 @@ data/workflow/
 │   ├── imagegen/             ← ⚠ PYTHON, chạy NATIVE trên máy, KHÔNG trong compose
 │   │   ├── server.py         ← SD1.5 + LCM trên MPS, HTTP :7860
 │   │   └── run.sh
+│   ├── imagereview/          ← Claude review từng ảnh cảnh, HTTP 127.0.0.1:7861
+│   │   └── server.js
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
 │       ├── shadowing-stub.js
@@ -180,6 +183,11 @@ host/imagegen/run.sh &              # lần đầu tải ~5.7 GB, nạp model ~8
 curl -s localhost:7860/health
 #   imageSource: auto (mặc định) | ai (bắt buộc có generator) | stock
 
+# Claude review ảnh cảnh (tuỳ chọn; không bật thì ảnh không được review)
+node host/imagereview/server.js &   # dùng `claude` đã đăng nhập, cổng 127.0.0.1:7861
+curl -s localhost:7861/health
+#   reviewImages: true (mặc định) | false
+
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
   -H 'Content-Type: application/json' -d '{"topic":"smoke test"}'
@@ -223,6 +231,13 @@ và mất hai nhân vật — video vẫn ra, chỉ mất bản sắc. Có sẵn
 ```bash
 cp host/imagegen/com.shawnspace.imagegen.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+```
+
+**Reviewer cũng vậy**, không thì mọi cảnh ra bản vẽ đầu tiên, không ai kiểm:
+
+```bash
+cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.shawnspace.imagereview.plist
 ```
 
 ### TikTok
@@ -643,6 +658,44 @@ với ~20s khi dùng ảnh stock.
 **Một GPU thì sinh tuần tự.** `fetch_scenes.js` hạ `MAX_PARALLEL` xuống 1 khi
 generator bật — chạy song song chỉ xếp hàng chờ nhau trong khi nhân đôi bộ nhớ
 đỉnh, và 16GB thì đó là đường dẫn tới swap chứ không phải tới tốc độ.
+
+### Claude review ảnh cảnh (`host/imagereview/`)
+
+SD 1.5 ở guidance 1.0 bám prompt rất lỏng, và không gì trong pipeline nhận ra: một
+câu về siro trong quán cà phê ra cảnh **cậu bé đứng ở hành lang trường học**, decode
+hoàn hảo. Nên mỗi ảnh sinh ra được gửi cho Claude, đối chiếu với **câu thoại** (đồ vật
+câu nhắc tên + bối cảnh của chủ đề) và **nhân vật**; trượt thì vẽ lại bằng prompt
+Claude viết lại, tối đa `MAX_DRAWS` = 3 lần, giữ bản tốt nhất.
+
+- **Chạy trên host, gọi `claude -p`** — không phải API key. Image n8n không có `claude`.
+  Ảnh đi **inline qua stream-json** (không cần tool đọc file), `--tools ""` (chỉ nhìn,
+  không làm gì khác), `--json-schema` (verdict được parse, không moi từ văn xuôi),
+  `--system-prompt` riêng và `cwd` ngoài repo — để không trả tiền cho prompt mặc định
+  của Claude Code và 40 KB `CLAUDE.md` này trên **mỗi ảnh**.
+- **`--bare` không dùng được**: nó bắt buộc `ANTHROPIC_API_KEY`, bỏ qua đăng nhập OAuth.
+- **Bind `127.0.0.1`, không phải `0.0.0.0`.** Docker Desktop vẫn route
+  `host.docker.internal` tới loopback (đã kiểm từ trong `shadowing-n8n`), và máy khác
+  trong LAN không tiêu được quota Claude của bạn.
+- **Đo được: ~6 s mỗi lần review.** Hai cảnh chạy song song để review cảnh này trong
+  lúc GPU vẽ cảnh kia; `onGpu()` vẫn giữ việc vẽ tuần tự.
+- **`REVIEW_BUDGET_MS` = 180 s** — sau đó không vẽ lại nữa. Workflow `daily` cho cả
+  lần dựng 540 s; reviewer chậm hay bị rate-limit không được phép ăn hết phần đó.
+- **Ảnh nền title card xếp hàng ĐẦU TIÊN**, trước các cảnh. Xếp cuối thì nó tới lượt
+  khi budget đã hết và luôn ra bản vẽ đầu — mà nó chính là bìa trên lưới profile.
+- Reviewer chết / timeout / trả lỗi → giữ ảnh chưa review. Review làm ảnh đẹp hơn,
+  **không bao giờ được làm mất video**.
+
+**Độ khắt khe đã phải chỉnh một lần, đừng siết lại mò.** Bản đầu bắt cả đồ vật *suy
+ra* (giá tiền → máy tính tiền) và trang phục nhân vật → **0/6 cảnh qua** dù cảnh nhìn
+rõ là quán cà phê. Luật hiện tại: chỉ bối cảnh + tối đa 2 đồ vật **câu nhắc tên**; bộ
+phận đại diện cho cả vật ("pin" laptop → laptop); nhân vật chỉ trượt khi **sai người**
+(giới tính, họ màu tóc khác hẳn) — lệch trang phục là hạn chế đã biết của generator,
+ghi vào `issues` chứ không đánh trượt.
+
+⚠ **Giới hạn thật nằm ở generator, không ở reviewer.** Đồ nhỏ (sạc, pin, chai siro,
+thẻ) SD 1.5 gần như không vẽ ra được dù prompt viết lại đặt chúng lên đầu — vẽ lại
+nâng điểm 2 → 4-5 chứ hiếm khi qua. Bối cảnh và đồ lớn (văn phòng, laptop) thì vẽ lại
+sửa được.
 
 ### Gọi API ảnh bên ngoài
 

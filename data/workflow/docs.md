@@ -229,6 +229,33 @@ phần đuôi thay đổi theo chủ đề.
 Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLine:false`, và câu
 tuỳ biến.
 
+### Claude review ảnh cảnh ✅ (2026-10-05)
+
+Mỗi ảnh SD vẽ ra được Claude (qua `claude -p` trên máy, `host/imagereview/server.js`,
+cổng `127.0.0.1:7861`) đối chiếu với câu thoại: câu nhắc **laptop**, **công ty** thì ảnh
+phải có laptop và văn phòng. Trượt → vẽ lại bằng prompt Claude viết lại (tối đa 3 lần
+vẽ, giữ bản tốt nhất). Ảnh nền title card cũng được review.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `reviewImages` | `true` | `false` = không review. Reviewer không chạy thì tự bỏ qua |
+
+Kết quả nằm trong run record: mỗi scene có `review` (`pass`, `score`, `required`,
+`missing`, `issues`, `draws`, `history` từng lần vẽ), title card ở `coverReview`, và
+webhook trả tóm tắt ở `scenes.passed / failed / redraws`.
+
+**Đo trên run thật** *"reporting a problem with your laptop to IT"* (Groq, 6 câu):
+
+- Cả 6 ảnh giữ lại đều có **văn phòng + laptop**; trước đó cảnh hay trôi sang hành lang
+  hay lớp học.
+- 3/7 qua (gồm ảnh nền), 9 lần vẽ lại. Bốn cảnh "trượt" chỉ vì thiếu **sạc** / **pin**
+  — đồ quá nhỏ cho SD 1.5. Vẽ lại nâng điểm 2 → 4-5.
+- **Thời gian: ~240 s** mỗi video so với ~100 s trước đây; review ~6 s/ảnh. Budget
+  180 s giữ nó dưới timeout 540 s của `daily`.
+
+⚠ Phải chạy reviewer như LaunchAgent (xem `CLAUDE.md`) thì lịch 07:00/19:00 mới có review.
+Mỗi video tốn khoảng 10-20 lần gọi `claude -p` vào hạn mức gói Claude.
+
 ### Trang kết cuối video ✅ (2026-10-05)
 
 Sau câu thoại cuối có thêm một trang **chỉ có chữ**: cảm ơn người xem và mời follow

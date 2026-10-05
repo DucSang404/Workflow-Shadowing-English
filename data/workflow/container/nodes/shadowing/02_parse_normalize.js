@@ -156,7 +156,7 @@ const intro = introText
 fs.writeFileSync(
   cfg.manifestPath,
   JSON.stringify({ runId: cfg.runId, topic: cfg.topic, music: cfg.music,
-    imageSource: cfg.imageSource, caption, hashtags, coverPrompt, intro, sentences }, null, 2),
+    imageSource: cfg.imageSource, reviewImages: cfg.reviewImages, caption, hashtags, coverPrompt, intro, sentences }, null, 2),
   'utf8',
 );
 

@@ -83,6 +83,8 @@ fs.writeFileSync(cfg.srtPath, srt, 'utf8');
 let scenes = [];
 let scenesMissing = [];
 let coverBackground = null;
+let coverReview = null;
+let reviewer = null;
 try {
   const raw = $('Fetch Scenes').first().json.stdout;
   if (raw) {
@@ -90,6 +92,8 @@ try {
     scenes = parsed.scenes ?? [];
     scenesMissing = parsed.missing ?? [];
     coverBackground = parsed.coverBackground ?? null;
+    coverReview = parsed.coverReview ?? null;
+    reviewer = parsed.reviewer ?? null;
   }
 } catch (err) {
   console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
@@ -153,6 +157,8 @@ return [{
     skipped,
     scenes,
     scenesMissing,
+    coverReview,
+    reviewer,
     introLine: introAudio?.en ?? null,
     introMs,
     introMissing: probe.introMissing ?? null,
