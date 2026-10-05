@@ -21,6 +21,12 @@
  * The generator is a preference, not a dependency: if it does not answer, the
  * run falls through to the stock tiers and nothing fails.
  *
+ * Every generated still is then shown to Claude (host/imagereview, :7861), which
+ * checks it against the line it illustrates - a line about a laptop at the office
+ * has to show a laptop and an office - and against the character's hair and
+ * clothes. A still that fails is redrawn from the prompt Claude rewrote, and the
+ * best draw is kept. The reviewer is optional in the same way the generator is.
+ *
  * The important design point is that a search yields *candidates*, not an answer.
  * Openverse indexes many providers and some of them (Wikimedia in particular)
  * answer this host with HTTP 429 while others serve happily, so taking only the
@@ -51,6 +57,19 @@ const IMAGEGEN_HEALTH_MS = 1500;
 // Generous: four LCM steps on an M2 is seconds, but the first call of a session
 // also pays for the model being paged in.
 const IMAGEGEN_MS = 120000;
+
+const IMAGEREVIEW_URL = 'http://host.docker.internal:7861';
+// One `claude -p` call is ~5 s; this also covers waiting behind the reviewer's
+// two-call concurrency limit.
+const IMAGEREVIEW_MS = 100000;
+// Draws per still, the first included. Each redraw uses the prompt Claude rewrote
+// for exactly what was missing, so a third attempt is where returns run out.
+const MAX_DRAWS = 3;
+// No new redraws after this long. The daily workflow gives the whole build 540 s
+// and a normal one takes ~100 s, so a slow or rate-limited reviewer must not be
+// able to spend the rest. Whatever was drawn by then is kept.
+const REVIEW_BUDGET_MS = 180000;
+const startedAt = Date.now();
 
 // Wikimedia and Flickr both reject clients that do not identify themselves, and
 // Wikimedia asks for a contact. A bare fetch() gets HTTP 429.
@@ -194,9 +213,9 @@ async function download(url, dest) {
  * Asks the host generator for one scene. Returns null when it is not running,
  * which is the normal case for anyone who has not started it.
  */
-async function generateScene(sentence, dest, trace) {
+async function generateScene(sentence, dest, trace, prompt) {
   try {
-    const res = await withTimeout(`${IMAGEGEN_URL}/generate`, {
+    const { buf, seconds } = await onGpu(() => withTimeout(`${IMAGEGEN_URL}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // imagePrompt, NOT imageQuery. The query is keywords for a stock index and
@@ -204,20 +223,18 @@ async function generateScene(sentence, dest, trace) {
       // manuscript for "team standup meeting office whiteboard". The prompt is
       // the same scene written as a sentence, which works.
       body: JSON.stringify({
-        prompt: sentence.imagePrompt || sentence.imageQuery || manifest.topic,
+        prompt,
         // Which of the two recurring characters is speaking this line. The
         // dialogue already alternates A and B, so the series gets a consistent
         // cast for free - the generator looks up assets/characters/<A|B>.png and
         // conditions on it.
         character: sentence.speaker ?? null,
       }),
-    }, IMAGEGEN_MS);
+    }, IMAGEGEN_MS).then(async (r) => {
+      if (!r.ok) throw new Error(`http ${r.status} ${(await r.text().catch(() => '')).slice(0, 120)}`);
+      return { buf: Buffer.from(await r.arrayBuffer()), seconds: Number(r.headers.get('x-generate-seconds')) || null };
+    }));
 
-    if (!res.ok) {
-      throw new Error(`http ${res.status} ${(await res.text().catch(() => '')).slice(0, 120)}`);
-    }
-
-    const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < MIN_BYTES) throw new Error(`too small (${buf.length} bytes)`);
 
     const raw = `${dest}.raw`;
@@ -233,17 +250,108 @@ async function generateScene(sentence, dest, trace) {
     return {
       idx: sentence.idx,
       file: dest,
-      query: sentence.imagePrompt || sentence.imageQuery,
-      matchedQuery: sentence.imagePrompt || sentence.imageQuery,
+      query: prompt,
+      matchedQuery: prompt,
       source: 'generated',
       license: null,
       attribution: null,
-      generateSeconds: Number(res.headers.get('x-generate-seconds')) || null,
+      generateSeconds: seconds,
     };
   } catch (err) {
     trace.push(`imagegen: ${err.message}`);
     return null;
   }
+}
+
+// One GPU. Two scenes are worked on at once so Claude can review one while the
+// next is being drawn, but the draws themselves still go strictly one at a time.
+let gpuQueue = Promise.resolve();
+function onGpu(fn) {
+  const run = gpuQueue.then(fn, fn);
+  gpuQueue = run.catch(() => {});
+  return run;
+}
+
+/** Claude's verdict on one still. Throws when the reviewer cannot give one. */
+async function reviewStill(file, { kind, line, character, prompt }) {
+  const res = await withTimeout(`${IMAGEREVIEW_URL}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: fs.readFileSync(file).toString('base64'),
+      mediaType: 'image/jpeg',
+      kind,
+      topic: manifest.topic,
+      line: line ? { idx: line.idx, en: line.en, vi: line.vi } : null,
+      // The whole exchange, so "that" in "any syrup with that?" can be resolved.
+      dialogue: manifest.sentences.map(({ idx, speaker, en }) => ({ idx, speaker, en })),
+      character,
+      prompt,
+    }),
+  }, IMAGEREVIEW_MS);
+  if (!res.ok) throw new Error(`http ${res.status} ${(await res.text().catch(() => '')).slice(0, 160)}`);
+  return res.json();
+}
+
+/**
+ * Draws a still, has Claude review it, and redraws from Claude's rewritten
+ * prompt until one passes, MAX_DRAWS is reached or the budget is spent. Keeps the
+ * best draw: a pass beats a fail, then the higher score, then the earlier draw.
+ *
+ * With no reviewer this is exactly one plain draw, as before.
+ */
+async function drawReviewed(sentence, dest, trace, kind) {
+  const original = sentence.imagePrompt || sentence.imageQuery || manifest.topic;
+  if (!reviewerUp) return generateScene(sentence, dest, trace, original);
+
+  const draws = [];
+  let prompt = original;
+  let reviewError = null;
+  for (let n = 1; n <= MAX_DRAWS; n += 1) {
+    const made = await generateScene(sentence, dest.replace(/\.jpg$/, `_draw${n}.jpg`), trace, prompt);
+    if (!made) break;
+
+    let verdict = null;
+    try {
+      verdict = await reviewStill(made.file, {
+        kind, line: kind === 'scene' ? sentence : null, character: sentence.speaker ?? null, prompt,
+      });
+    } catch (err) {
+      // A reviewer that cannot answer is not a reason to lose the picture.
+      reviewError = err.message;
+      trace.push(`review: ${err.message}`);
+    }
+    draws.push({ made, verdict, prompt });
+    if (!verdict || verdict.pass) break;
+    if (Date.now() - startedAt > REVIEW_BUDGET_MS) {
+      trace.push('review budget spent');
+      break;
+    }
+    prompt = String(verdict.revisedPrompt ?? '').trim() || original;
+  }
+  if (!draws.length) return null;
+
+  const rank = (d) => (d.verdict?.pass ? 100 : 0) + (d.verdict?.score ?? -1);
+  const best = draws.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  fs.renameSync(best.made.file, dest);
+  for (const d of draws) if (d !== best) fs.rmSync(d.made.file, { force: true });
+
+  const v = best.verdict;
+  return {
+    ...best.made,
+    file: dest,
+    review: v
+      ? {
+        pass: v.pass, score: v.score, required: v.required, missing: v.missing,
+        characterOk: v.characterOk, issues: v.issues, draws: draws.length, model: v.model,
+        // Every draw, so a scene that never passed shows what was tried.
+        history: draws.map((d) => ({
+          prompt: d.prompt, pass: d.verdict?.pass ?? null, score: d.verdict?.score ?? null,
+          missing: d.verdict?.missing ?? null,
+        })),
+      }
+      : { pass: null, skipped: reviewError ?? 'not reviewed', draws: draws.length },
+  };
 }
 
 async function resolveScene(sentence) {
@@ -253,7 +361,7 @@ async function resolveScene(sentence) {
   const trace = [];
 
   if (generatorUp) {
-    const made = await generateScene(sentence, dest, trace);
+    const made = await drawReviewed(sentence, dest, trace, 'scene');
     if (made) return made;
   }
   if (wantsOnlyAi) {
@@ -311,6 +419,7 @@ async function mapWithLimit(items, limit, worker) {
 const wantsStock = (manifest.imageSource ?? 'auto') === 'stock';
 const wantsOnlyAi = (manifest.imageSource ?? 'auto') === 'ai';
 let generatorUp = false;
+let reviewerUp = false;
 
 /** One probe for the whole run, rather than a dead connection per sentence. */
 async function generatorAvailable() {
@@ -322,8 +431,19 @@ async function generatorAvailable() {
   }
 }
 
+/** Same idea for the reviewer, asked only when there is something to review. */
+async function reviewerAvailable() {
+  if (!generatorUp || manifest.reviewImages === false) return false;
+  try {
+    return (await withTimeout(`${IMAGEREVIEW_URL}/health`, {}, IMAGEGEN_HEALTH_MS)).ok;
+  } catch {
+    return false;
+  }
+}
+
 (async () => {
   generatorUp = await generatorAvailable();
+  reviewerUp = await reviewerAvailable();
   if (wantsOnlyAi && !generatorUp) {
     // Asked for generated pictures only, and the generator is not running. Say
     // so rather than quietly shipping a video with no scenes at all.
@@ -338,34 +458,54 @@ async function generatorAvailable() {
   // One at a time once the generator is in play: there is a single GPU, so
   // concurrent requests only queue behind each other while multiplying peak
   // memory - on 16 GB that is how you get a swap storm instead of a speedup.
-  const limit = generatorUp ? 1 : MAX_PARALLEL;
-  const settled = await mapWithLimit(manifest.sentences, limit, async (sentence) => {
-    try {
-      return await resolveScene(sentence);
-    } catch (err) {
-      return { idx: sentence.idx, query: sentence.imageQuery, missing: true, reason: err.message };
-    }
-  });
-
+  // With a reviewer it is two, so one scene is reviewed while the next is drawn;
+  // `onGpu` still keeps the draws themselves one at a time.
+  const limit = generatorUp ? (reviewerUp ? 2 : 1) : MAX_PARALLEL;
   // Backdrop for the title card. Generated rather than borrowed from scene 1,
   // which has a character standing in the middle of exactly where the title goes.
   // No `character` is passed, so the adapter stays at zero and nobody appears.
+  //
+  // Queued FIRST, ahead of the scenes: it is also the cover on the profile grid,
+  // and queued last it reached the reviewer after the redraw budget was spent
+  // and shipped its first draw whatever the verdict.
   let coverBackground = null;
-  if (generatorUp && manifest.coverPrompt) {
-    const dest = path.join(dir, 'cover_bg.jpg');
-    const made = await generateScene(
-      { idx: 0, imagePrompt: manifest.coverPrompt, imageQuery: manifest.topic },
-      dest, [],
-    );
-    if (made) coverBackground = made.file;
-  }
+  let coverReview = null;
+  const coverJob = generatorUp && manifest.coverPrompt
+    ? [{
+      cover: true,
+      run: async () => {
+        const made = await drawReviewed(
+          { idx: 0, imagePrompt: manifest.coverPrompt, imageQuery: manifest.topic },
+          path.join(dir, 'cover_bg.jpg'), [], 'cover',
+        );
+        if (made) {
+          coverBackground = made.file;
+          coverReview = made.review ?? null;
+        }
+      },
+    }]
+    : [];
+
+  const jobs = [...coverJob, ...manifest.sentences];
+  const settled = (await mapWithLimit(jobs, limit, async (job) => {
+    if (job.cover) {
+      await job.run().catch(() => {});
+      return null;
+    }
+    try {
+      return await resolveScene(job);
+    } catch (err) {
+      return { idx: job.idx, query: job.imageQuery, missing: true, reason: err.message };
+    }
+  })).filter(Boolean);
 
   const scenes = settled.filter((r) => !r.missing).sort((a, b) => a.idx - b.idx);
   const missing = settled.filter((r) => r.missing).map(({ idx, query, reason }) => ({ idx, query, reason }));
 
   process.stdout.write(JSON.stringify({
-    scenes, missing, coverBackground,
+    scenes, missing, coverBackground, coverReview,
     generator: generatorUp ? 'up' : 'off',
+    reviewer: reviewerUp ? 'up' : 'off',
     imageSource: manifest.imageSource ?? 'auto',
   }));
 })().catch((err) => { console.error(err.message); process.exit(1); });

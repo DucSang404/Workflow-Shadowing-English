@@ -18,6 +18,7 @@ viết code cho môi trường A rồi chạy ở môi trường B. Cây thư m�
 | `container/nodes/` | Trong task runner của n8n, nội dung Code node | `node` + builtin trong `NODE_FUNCTION_ALLOW_BUILTIN` |
 | `infra/` | Không chạy — định nghĩa image | — |
 | `host/imagegen/` | macOS, **Python qua `uv`**, GPU Metal | torch + diffusers |
+| `host/imagereview/` | macOS, Node, gọi CLI `claude` đã đăng nhập | `claude -p` |
 
 ### ⛔ Ràng buộc của container (đọc kỹ trước khi viết `container/**`)
 
@@ -66,6 +67,8 @@ data/workflow/
 │   ├── imagegen/             ← ⚠ PYTHON, chạy NATIVE trên máy, KHÔNG trong compose
 │   │   ├── server.py         ← SD1.5 + LCM trên MPS, HTTP :7860
 │   │   └── run.sh
+│   ├── imagereview/          ← Claude review từng ảnh cảnh, HTTP 127.0.0.1:7861
+│   │   └── server.js
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
 │       ├── shadowing-stub.js
@@ -180,6 +183,11 @@ host/imagegen/run.sh &              # lần đầu tải ~5.7 GB, nạp model ~8
 curl -s localhost:7860/health
 #   imageSource: auto (mặc định) | ai (bắt buộc có generator) | stock
 
+# Claude review ảnh cảnh (tuỳ chọn; không bật thì ảnh không được review)
+node host/imagereview/server.js &   # dùng `claude` đã đăng nhập, cổng 127.0.0.1:7861
+curl -s localhost:7861/health
+#   reviewImages: true (mặc định) | false
+
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
   -H 'Content-Type: application/json' -d '{"topic":"smoke test"}'
@@ -223,6 +231,13 @@ và mất hai nhân vật — video vẫn ra, chỉ mất bản sắc. Có sẵn
 ```bash
 cp host/imagegen/com.shawnspace.imagegen.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+```
+
+**Reviewer cũng vậy**, không thì mọi cảnh ra bản vẽ đầu tiên, không ai kiểm:
+
+```bash
+cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.shawnspace.imagereview.plist
 ```
 
 ### TikTok
@@ -509,6 +524,11 @@ ai để ý.
 Thẻ được đánh dấu `raw` trong scene chain nên **không bị làm tối và không bị phủ
 scrim** như ảnh cảnh — nó đã được thiết kế sẵn, dimming sẽ làm chết màu nhấn.
 
+**Trang kết** (`renderOutroCard()`) là phần cuối của cùng timeline đó, cũng `raw`. Nó
+nằm sau cue cuối nên không dịch phụ đề, nhưng **file dài thêm `outroSec`** — audio
+được nối thêm bằng `apad=pad_len` (sample), và `verify-sync.js` phải cộng
+`record.outroSec` khi so độ dài mp4, không thì báo lệch đúng bằng độ dài trang kết.
+
 ### Sinh ảnh cảnh bằng SD 1.5 (chạy trên host)
 
 **Không thể đưa vào `docker-compose`.** Docker Desktop trên macOS không với được
@@ -544,19 +564,35 @@ thêm dữ liệu nào.
 
 - Dùng bản **`-plus-face`**: bản thường copy cả bố cục ảnh gốc, cho ra sáu bức
   chân dung giống hệt nhau thay vì sáu cảnh khác nhau.
-- `IP_SCALE` **0.55**. Cao hơn thì mọi cảnh co lại thành chân dung, mất bối cảnh
-  mà câu thoại đang nói tới.
+- `IP_SCALE` **0.40** — đây là mặc định trong `server.py`, đừng chép lại con số
+  ở đâu khác. Đo trên cùng prompt+seed: **0.55 nuốt mất phong cảnh** (nền trơn
+  của ảnh tham chiếu bị kéo sang), 0.28 giữ cảnh nhưng tóc trôi khỏi tham chiếu,
+  0.40 giữ được cả hai. Lý lẽ đầy đủ nằm ngay trong `server.py:82-91`.
 - Nạp **sau** `fuse_lora()`, không phải trước.
 - ⚠ **Giống, không phải trùng khít.** Tóc, mắt, trang phục giữ được qua các cảnh;
   khuôn mặt trôi nhẹ, và tóc nhân vật nam ngả tím so với xanh navy của ảnh gốc.
   Muốn khoá tuyệt đối thì phải train LoRA riêng cho nhân vật — việc khác hẳn.
-- Thay nhân vật = thay hai file PNG đó, không đụng code. Bản trước nằm ở
-  `assets/characters/previous/`.
-- **Hai nhân vật hiện tại do chính pipeline sinh ra**, không lấy từ phim nào. Đã
-  cân nhắc dùng nhân vật Your Name và bỏ: đó là IP của CoMix Wave Films, dùng làm
-  dàn nhân vật cố định cho kênh công khai là rủi ro gỡ video, và nó buộc bản sắc
-  kênh phụ thuộc vào tài sản của người khác. Sinh nhân vật gốc theo cùng mỹ học
-  cho kết quả tương đương mà bạn sở hữu hoàn toàn.
+- Thay nhân vật = thay hai file PNG đó **và `assets/characters/traits.json`**,
+  không đụng code. Bản trước nằm ở `assets/characters/previous/`.
+- **`traits.json` là thứ adapter không mang được.** Bản `-plus-face` chỉ chuyển
+  khuôn mặt, nên tóc và trang phục phải đi bằng chữ trong prompt. Đo trên cặp
+  hiện tại: trước khi có traits, tóc nhân vật nữ ra ngang vai ở cảnh này và nâu
+  đỏ ở cảnh kia; thêm traits thì tóc dài đen giữ được và blazer/cà vạt của nam
+  ổn định.
+  ⚠ **Chưa giải quyết xong**: màu tóc nam vẫn trôi sang đỏ ở khoảng 4/6 seed.
+  Nguyên nhân là `guidance_scale` mặc định **1.0** — không có classifier-free
+  guidance thì prompt bám rất yếu và thiên kiến của model thắng. Nâng guidance
+  sẽ cải thiện nhưng tăng gấp đôi thời gian sinh; chưa thử.
+- **Nguồn gốc bộ nhân vật hiện tại (2026-10-04)**: cắt từ một khung phim Your Name
+  (`assets/characters/source.png`), theo yêu cầu rõ ràng của chủ kênh — mặt phải
+  giống ảnh gốc, không chế.
+  ⚠ **Rủi ro đã biết, không phải đã giải quyết**: đó là IP của CoMix Wave Films.
+  Dùng làm dàn nhân vật cố định cho một kênh đăng công khai hằng ngày có rủi ro bị
+  gỡ video, và buộc bản sắc kênh phụ thuộc tài sản của người khác. Trước đó bộ
+  nhân vật do chính pipeline sinh ra nên không vướng điều này; bản cũ còn ở
+  `assets/characters/previous/` nếu cần quay lại.
+  Muốn vừa giống mỹ học vừa sở hữu hoàn toàn thì sinh nhân vật gốc theo cùng phong
+  cách — gọi `/generate` không truyền `character`.
 - **Sinh nhân vật mới**: gọi `/generate` **không truyền `character`**. Nhớ là một
   khi IP-Adapter đã nạp thì UNet luôn đòi `image_embeds`, nên server tự đưa ảnh
   trắng với scale 0 — thiếu cái đó là vỡ với
@@ -623,6 +659,44 @@ với ~20s khi dùng ảnh stock.
 generator bật — chạy song song chỉ xếp hàng chờ nhau trong khi nhân đôi bộ nhớ
 đỉnh, và 16GB thì đó là đường dẫn tới swap chứ không phải tới tốc độ.
 
+### Claude review ảnh cảnh (`host/imagereview/`)
+
+SD 1.5 ở guidance 1.0 bám prompt rất lỏng, và không gì trong pipeline nhận ra: một
+câu về siro trong quán cà phê ra cảnh **cậu bé đứng ở hành lang trường học**, decode
+hoàn hảo. Nên mỗi ảnh sinh ra được gửi cho Claude, đối chiếu với **câu thoại** (đồ vật
+câu nhắc tên + bối cảnh của chủ đề) và **nhân vật**; trượt thì vẽ lại bằng prompt
+Claude viết lại, tối đa `MAX_DRAWS` = 3 lần, giữ bản tốt nhất.
+
+- **Chạy trên host, gọi `claude -p`** — không phải API key. Image n8n không có `claude`.
+  Ảnh đi **inline qua stream-json** (không cần tool đọc file), `--tools ""` (chỉ nhìn,
+  không làm gì khác), `--json-schema` (verdict được parse, không moi từ văn xuôi),
+  `--system-prompt` riêng và `cwd` ngoài repo — để không trả tiền cho prompt mặc định
+  của Claude Code và 40 KB `CLAUDE.md` này trên **mỗi ảnh**.
+- **`--bare` không dùng được**: nó bắt buộc `ANTHROPIC_API_KEY`, bỏ qua đăng nhập OAuth.
+- **Bind `127.0.0.1`, không phải `0.0.0.0`.** Docker Desktop vẫn route
+  `host.docker.internal` tới loopback (đã kiểm từ trong `shadowing-n8n`), và máy khác
+  trong LAN không tiêu được quota Claude của bạn.
+- **Đo được: ~6 s mỗi lần review.** Hai cảnh chạy song song để review cảnh này trong
+  lúc GPU vẽ cảnh kia; `onGpu()` vẫn giữ việc vẽ tuần tự.
+- **`REVIEW_BUDGET_MS` = 180 s** — sau đó không vẽ lại nữa. Workflow `daily` cho cả
+  lần dựng 540 s; reviewer chậm hay bị rate-limit không được phép ăn hết phần đó.
+- **Ảnh nền title card xếp hàng ĐẦU TIÊN**, trước các cảnh. Xếp cuối thì nó tới lượt
+  khi budget đã hết và luôn ra bản vẽ đầu — mà nó chính là bìa trên lưới profile.
+- Reviewer chết / timeout / trả lỗi → giữ ảnh chưa review. Review làm ảnh đẹp hơn,
+  **không bao giờ được làm mất video**.
+
+**Độ khắt khe đã phải chỉnh một lần, đừng siết lại mò.** Bản đầu bắt cả đồ vật *suy
+ra* (giá tiền → máy tính tiền) và trang phục nhân vật → **0/6 cảnh qua** dù cảnh nhìn
+rõ là quán cà phê. Luật hiện tại: chỉ bối cảnh + tối đa 2 đồ vật **câu nhắc tên**; bộ
+phận đại diện cho cả vật ("pin" laptop → laptop); nhân vật chỉ trượt khi **sai người**
+(giới tính, họ màu tóc khác hẳn) — lệch trang phục là hạn chế đã biết của generator,
+ghi vào `issues` chứ không đánh trượt.
+
+⚠ **Giới hạn thật nằm ở generator, không ở reviewer.** Đồ nhỏ (sạc, pin, chai siro,
+thẻ) SD 1.5 gần như không vẽ ra được dù prompt viết lại đặt chúng lên đầu — vẽ lại
+nâng điểm 2 → 4-5 chứ hiếm khi qua. Bối cảnh và đồ lớn (văn phòng, laptop) thì vẽ lại
+sửa được.
+
 ### Gọi API ảnh bên ngoài
 
 Rút ra khi làm `fetch_scenes.js`, cả ba đều làm mất ảnh một cách im lặng:
@@ -637,6 +711,28 @@ Rút ra khi làm `fetch_scenes.js`, cả ba đều làm mất ảnh một cách 
   Cắt ngược lại ra `"printed hotel"` và trả về tranh khắc Hôtel des Invalides.
 - **HTTP 200 không chứng minh đó là ảnh.** Trang lỗi cũng tải về ngon lành.
   Luôn để `ffmpeg`/`ffprobe` decode lại rồi mới tin.
+
+**Câu thoại thương hiệu đầu video.** Nó đi qua **đúng đường TTS của hội thoại**, như
+một item `idx 0`, nên không cần node mới và hỏng thì suy biến y hệt một câu hỏng
+(không có `sent_000.mp3` → card im lặng, dùng lại `introMs` cấu hình).
+
+Nó **không** nằm trong `manifest.sentences`. Mọi thứ phía sau coi mảng đó là hội
+thoại: `fetch_scenes.js` đòi một ảnh cho mỗi phần tử, `03_build_srt.js` đòi một
+cue cho mỗi phần tử. Câu thương hiệu không phải cả hai.
+
+Khi có câu thoại, **độ dài đo được của nó thay thế `introMs` cấu hình** — audio
+phải dài đúng bằng số chữ thực sự đọc ra. Làm tròn **lên** mili-giây nguyên: ở
+24 kHz một mili-giây là đúng 24 sample, làm tròn xuống thì cụt âm cuối.
+
+⚠️ **Pad bằng `apad=whole_len` (đếm sample), tuyệt đối không dùng `whole_dur`.**
+Đo trên bản ffmpeg này: input 24000 sample, `whole_dur=2.0` ra **48017**, còn
+`whole_len=48000` ra **đúng 48000**. Lệch 17 sample thì không ai nghe thấy — và
+đó chính là lý do không được phép để nó bắt đầu.
+
+Phụ lưu ý: khi intro có tiếng, **cue 1 không còn ranh giới im lặng phía trước**
+(khoảng `introTailMs` ngắn hơn cửa sổ dò của `silencedetect`), nên
+`verify-sync.js` đối chiếu onset với cue 2..N và in rõ điều đó. Đừng "sửa" bằng
+cách hạ ngưỡng dò — sẽ bắt nhầm các quãng ngắt giữa câu.
 
 **Index của câu sau node TTS.** HTTP Request node thay `json` bằng binary response,
 nên `$json.idx` biến mất. `Write Sentence Audio` lấy lại qua paired item:

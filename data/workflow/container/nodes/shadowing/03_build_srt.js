@@ -37,9 +37,30 @@ function srtTime(sec) {
 
 // The title card sits in front of everything, so every cue starts that much
 // later. This is the ONE place the offset is decided for the subtitles, and
-// build_video.js prepends exactly the same number of milliseconds of silence to
-// the audio - see the note on `introMs` in 01_prepare_run.js.
-const introSec = cfg.intro ? cfg.introMs / 1000 : 0;
+// build_video.js prepends exactly the same number of milliseconds to the audio
+// - see the note on `introMs` in 01_prepare_run.js.
+//
+// When the card has a spoken brand line, its MEASURED duration decides the
+// offset rather than the configured `introMs`: the audio has to be as long as
+// the words actually are. Rounded UP to a whole millisecond so the prepended
+// audio and the cue shift stay the same integer number of samples - at 24 kHz a
+// millisecond is exactly 24 of them. Rounding down would clip the last syllable.
+const introAudio = probe.intro ?? null;
+const introMs = (() => {
+  if (!cfg.intro) return 0;
+  if (!introAudio) return cfg.introMs;
+  const spoken = Math.ceil(introAudio.duration * 1000) + cfg.introTailMs;
+  // Never shorter than the card needs to be readable, never long enough to be a
+  // dead opening if the line somehow came back far too long.
+  return Math.min(Math.max(spoken, cfg.introMs), 15000);
+})();
+const introSec = introMs / 1000;
+
+// The end card comes after the last cue, so it moves no subtitle - it only
+// lengthens the file. Carried in the plan so build_video.js appends exactly this
+// much silence and draws the card for exactly this long.
+const outroMs = cfg.outro ? cfg.outroMs : 0;
+const withBrand = (s) => String(s ?? '').replace(/\{brand\}/gi, cfg.brand.name).trim();
 
 let cursor = introSec;
 const cues = segments.map((seg, i) => {
@@ -62,6 +83,8 @@ fs.writeFileSync(cfg.srtPath, srt, 'utf8');
 let scenes = [];
 let scenesMissing = [];
 let coverBackground = null;
+let coverReview = null;
+let reviewer = null;
 try {
   const raw = $('Fetch Scenes').first().json.stdout;
   if (raw) {
@@ -69,6 +92,8 @@ try {
     scenes = parsed.scenes ?? [];
     scenesMissing = parsed.missing ?? [];
     coverBackground = parsed.coverBackground ?? null;
+    coverReview = parsed.coverReview ?? null;
+    reviewer = parsed.reviewer ?? null;
   }
 } catch (err) {
   console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
@@ -98,7 +123,14 @@ const plan = {
   outputs: cfg.outputs,
   gapSeconds: gap,
   introSec,
-  introMs: cfg.intro ? cfg.introMs : 0,
+  introMs,
+  introWav: introAudio?.wav ?? null,
+  introLine: introAudio?.en ?? null,
+  outroMs,
+  outroTitle: withBrand(cfg.outroTitle),
+  // Left with `{brand}` in it: build_video.js lifts the channel name out of this
+  // line and sets it as a badge, and needs to know where it was.
+  outroCta: String(cfg.outroCta ?? '').trim(),
   brand: cfg.brand,
   coverBackground,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
@@ -125,9 +157,15 @@ return [{
     skipped,
     scenes,
     scenesMissing,
+    coverReview,
+    reviewer,
+    introLine: introAudio?.en ?? null,
+    introMs,
+    introMissing: probe.introMissing ?? null,
     music,
     musicReason,
     introSec,
-    expectedDurationSec: Math.round(cursor * 100) / 100,
+    outroSec: outroMs / 1000,
+    expectedDurationSec: Math.round((cursor + outroMs / 1000) * 100) / 100,
   },
 }];

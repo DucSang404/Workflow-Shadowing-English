@@ -48,6 +48,14 @@ try {
     // The title card shifts every cue by this much; host/verify-sync.js needs it
     // to know where cue 1 is supposed to start.
     introSec: srt.introSec ?? 0,
+    // host/verify-sync.js needs these: a spoken brand line runs straight into the
+    // first sentence, so cue 1 has no detectable silence in front of it.
+    introLine: srt.introLine ?? null,
+    introMs: srt.introMs ?? 0,
+    introVoiced: Boolean(srt.introLine),
+    // The end card lengthens the file without moving any cue; host/verify-sync.js
+    // adds it back when it compares the timeline with the shipped mp4.
+    outroSec: srt.outroSec ?? 0,
     brand: cfg.brand,
     voices: { A: cfg.voiceA, B: cfg.voiceB },
     speed: cfg.speed,
@@ -55,6 +63,8 @@ try {
     sentences: manifest.sentences,
     segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),
     scenes: srt.scenes,
+    // Claude's verdict on the title-card backdrop; each scene carries its own.
+    coverReview: srt.coverReview ?? null,
     caption: manifest.caption ?? null,
     hashtags: manifest.hashtags ?? [],
     outputs: built.outputs,
@@ -66,6 +76,12 @@ try {
     music: built.music ?? null,
     loudness: built.loudness,
     skippedSentences: srt.skipped,
+    intro: {
+      line: srt.introLine,
+      ms: srt.introMs,
+      // Present only when the brand line failed TTS and the card fell back to silence.
+      missing: srt.introMissing ?? null,
+    },
   }, null, 2), 'utf8');
 
   if (!cfg.keepWorkDir) {
@@ -104,11 +120,24 @@ return [{
       ? { ...built.music, lookup: srt.musicReason ?? null }
       : { used: false, reason: srt.musicReason ?? 'no music' },
     skippedSentences: srt.skipped,
+    intro: {
+      line: srt.introLine,
+      ms: srt.introMs,
+      // Present only when the brand line failed TTS and the card fell back to silence.
+      missing: srt.introMissing ?? null,
+    },
+    outroSec: srt.outroSec ?? 0,
     scenes: {
       used: (srt.scenes ?? []).length,
       missing: srt.scenesMissing ?? [],
       // Only CC BY images oblige a credit line; cc0 and Pexels do not.
       attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),
+      // `off` means no reviewer answered, so every still went out unreviewed.
+      reviewer: srt.reviewer ?? 'off',
+      passed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === true).length,
+      failed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === false)
+        .map((sc) => ({ idx: sc.idx, score: sc.review.score, missing: sc.review.missing })),
+      redraws: (srt.scenes ?? []).reduce((n, sc) => n + Math.max(0, (sc.review?.draws ?? 1) - 1), 0),
     },
     coverError: built.coverError ?? null,
     workDirCleaned: cleaned,

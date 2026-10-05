@@ -66,20 +66,51 @@ const chain = segs.map((_, i) => `[a${i}]`).join('');
 // 03_build_srt.js applied to every cue. A fractional offset here would be the
 // start of exactly the drift this pipeline is built to prevent.
 const introMs = plan.introMs ?? 0;
-const delay = introMs ? `,adelay=${introMs}` : '';
+const introSamples = Math.round((introMs / 1000) * SR);
 
-ffmpeg([...voiceInputs, '-filter_complex',
-  `${pads};${chain}concat=n=${segs.length}:v=0:a=1${delay}[aout]`,
+// The card is either silent or carries a spoken brand line. Both occupy exactly
+// `introMs`, so the rest of the timeline cannot tell the difference.
+//
+// The spoken case pads with `apad=whole_len`, a SAMPLE count, not `whole_dur`:
+// given a 24000-sample input and whole_dur=2.0 this build returns 48017 samples,
+// while whole_len=48000 returns exactly 48000. A seventeen-sample slip is
+// inaudible and would never be noticed - which is precisely why it must not be
+// allowed to start.
+const hasIntroVoice = Boolean(introMs && plan.introWav && fs.existsSync(plan.introWav));
+
+// The end card is silence after the last sentence's gap. It comes after every
+// cue, so it shifts none of them - but it is still appended as a SAMPLE count
+// (`pad_len`), for the same reason the intro is: the file must be exactly as long
+// as the plan says, and verify-sync.js checks that against the shipped mp4.
+const outroMs = plan.outroMs ?? 0;
+const outroSamples = Math.round((outroMs / 1000) * SR);
+const outroPad = outroSamples ? `,apad=pad_len=${outroSamples}` : '';
+
+let voiceGraph;
+let allVoiceInputs = voiceInputs;
+if (hasIntroVoice) {
+  const i = segs.length; // the intro is appended last but concatenated first
+  allVoiceInputs = [...voiceInputs, '-i', plan.introWav];
+  voiceGraph = `${pads};[${i}:a]apad=whole_len=${introSamples},aresample=${SR}[intro];`
+    + `[intro]${chain}concat=n=${segs.length + 1}:v=0:a=1${outroPad}[aout]`;
+} else {
+  const delay = introMs ? `,adelay=${introMs}` : '';
+  voiceGraph = `${pads};${chain}concat=n=${segs.length}:v=0:a=1${delay}${outroPad}[aout]`;
+}
+
+ffmpeg([...allVoiceInputs, '-filter_complex', voiceGraph,
   '-map', '[aout]', '-ar', String(SR), '-ac', '1', '-c:a', 'pcm_s16le', voicePath]);
 
-// Cheap, and it catches the one mistake that matters: if adelay ever rounded,
-// every subtitle would be off by that much for the whole video.
+// Cheap, and it catches the one mistake that matters: if the lead-in is not
+// exactly `introMs` long, every subtitle is off by the difference for the whole
+// video. It covers both shapes - adelay silence and a padded spoken line - by
+// measuring what actually came out rather than trusting either filter.
 if (introMs) {
-  const want = Math.round((introMs / 1000) * SR);
-  const got = sampleCount(voicePath) - segs.reduce((n, sg) => n + Math.round(sg.duration * SR)
+  const want = introSamples;
+  const got = sampleCount(voicePath) - outroSamples - segs.reduce((n, sg) => n + Math.round(sg.duration * SR)
     + Math.round(gapSeconds * SR), 0);
   if (Math.abs(got - want) > SR / 100) {
-    console.error(`intro silence is ${got} samples, expected about ${want}`);
+    console.error(`intro lead-in is ${got} samples, expected about ${want}`);
     process.exit(3);
   }
 }
@@ -268,6 +299,66 @@ function wrapTitle(text, maxChars, maxLines) {
  * than two dissolved together.
  */
 
+// Nothing on a card may come within this much of an edge. A profile grid crops a
+// 9:16 cover towards a squarer shape and TikTok's own chrome eats the rest, so
+// cards are laid out as if the frame were narrower and shorter than it is.
+const CARD_SAFE_W = 0.84;
+
+/** Largest size at which `chars` capitals still fit inside a card's safe width. */
+function fitCaps(width, chars, cap) {
+  return Math.max(14, Math.floor(Math.min(cap, (width * CARD_SAFE_W) / (chars * CAPS_ADVANCE_RATIO))));
+}
+
+/**
+ * One centred line of card text.
+ *
+ * An outline on every line, because a card backdrop can be a photograph rather
+ * than a flat slab: without it a title crossing a bright window or a pale wall
+ * loses its edges exactly where it matters. Cheap insurance, and it lets the
+ * backdrop stay light enough to actually be seen.
+ */
+function cardText(file, px, colour, top, bold = true) {
+  return [
+    `drawtext=fontfile='${escapeFilterPath(bold ? COVER_FONT_BOLD : COVER_FONT)}'`,
+    `textfile='${escapeFilterPath(file)}'`,
+    `fontcolor=${colour}`,
+    `fontsize=${px}`,
+    `borderw=${Math.max(1, Math.round(px * 0.045))}`,
+    'bordercolor=0x0E1014@0.9',
+    'x=(w-text_w)/2',
+    `y=${top}`,
+  ].join(':');
+}
+
+/**
+ * What a card is drawn on: the backdrop of the place the conversation happens in,
+ * or the flat brand colour when no backdrop was generated. The layout on top does
+ * not change - only what sits behind it - so the profile grid still reads as one
+ * series.
+ *
+ * It has to be pushed well down before any text goes on it, in two stages: `eq`
+ * takes the brightness and colour out of the picture, then a full-frame wash in
+ * the brand background colour floors the contrast. Either alone left the title
+ * fighting with whatever happened to be behind it.
+ */
+function cardBackdrop(width, height) {
+  const backdrop = plan.coverBackground && fs.existsSync(plan.coverBackground)
+    ? plan.coverBackground
+    : null;
+  if (!backdrop) {
+    return { base: ['-f', 'lavfi', '-i', `color=c=0x0E1014:s=${width}x${height}`], dim: [] };
+  }
+  return {
+    base: ['-i', backdrop],
+    dim: [
+      `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+      `crop=${width}:${height}`,
+      'eq=brightness=-0.22:saturation=0.62',
+      `drawbox=x=0:y=0:w=${width}:h=${height}:color=0x0E1014@0.42:t=fill`,
+    ],
+  };
+}
+
 /**
  * Renders the branded title card to a png.
  *
@@ -285,14 +376,7 @@ function renderCard(width, height) {
   const brand = plan.brand ?? {};
   const accent = String(brand.accent ?? '#F5B544').replace('#', '0x');
   const cardPath = path.join(workDir, `card_${width}x${height}.png`);
-
-  // Nothing may come within this much of an edge. A profile grid crops a 9:16
-  // cover towards a squarer shape and TikTok's own chrome eats the rest, so the
-  // card is laid out as if the frame were narrower and shorter than it is.
-  const SAFE_W = 0.84;
-
-  /** Largest size at which `chars` characters still fit inside the safe width. */
-  const fit = (chars, cap) => Math.max(14, Math.floor(Math.min(cap, (width * SAFE_W) / (chars * CAPS_ADVANCE_RATIO))));
+  const fit = (chars, cap) => fitCaps(width, chars, cap);
 
   // Letter-spaced by hand: drawtext has no tracking, and the channel name has to
   // read as a wordmark rather than as one more line of copy. The spacing doubles
@@ -361,46 +445,9 @@ function renderCard(width, height) {
   y += Math.round(kickerPx * LINE) + gapAfterKicker;
   const runtimeY = y;
 
-  // An outline on every line, because the backdrop is now a photograph rather
-  // than a flat slab: without it a title crossing a bright window or a pale wall
-  // loses its edges exactly where it matters. Cheap insurance, and it lets the
-  // backdrop stay light enough to actually be seen.
-  const text = (file, px, colour, top, bold = true) => [
-    `drawtext=fontfile='${escapeFilterPath(bold ? COVER_FONT_BOLD : COVER_FONT)}'`,
-    `textfile='${escapeFilterPath(file)}'`,
-    `fontcolor=${colour}`,
-    `fontsize=${px}`,
-    `line_spacing=${lineGap}`,
-    `borderw=${Math.max(1, Math.round(px * 0.045))}`,
-    'bordercolor=0x0E1014@0.9',
-    'x=(w-text_w)/2',
-    `y=${top}`,
-  ].join(':');
+  const text = cardText;
 
-  // A backdrop of the place the conversation happens in, rather than a flat slab.
-  // The layout above does not change - only what sits behind it - so the profile
-  // grid still reads as one series.
-  //
-  // It has to be pushed well down before any text goes on it, in two stages: `eq`
-  // takes the brightness and colour out of the picture, then a full-frame wash in
-  // the brand background colour floors the contrast. Either alone left the title
-  // fighting with whatever happened to be behind it.
-  const backdrop = plan.coverBackground && fs.existsSync(plan.coverBackground)
-    ? plan.coverBackground
-    : null;
-
-  const base = backdrop
-    ? ['-i', backdrop]
-    : ['-f', 'lavfi', '-i', `color=c=0x0E1014:s=${width}x${height}`];
-
-  const dim = backdrop
-    ? [
-      `scale=${width}:${height}:force_original_aspect_ratio=increase`,
-      `crop=${width}:${height}`,
-      'eq=brightness=-0.22:saturation=0.62',
-      `drawbox=x=0:y=0:w=${width}:h=${height}:color=0x0E1014@0.42:t=fill`,
-    ]
-    : [];
+  const { base, dim } = cardBackdrop(width, height);
 
   ffmpeg([
     ...base,
@@ -423,8 +470,131 @@ function renderCard(width, height) {
   return cardPath;
 }
 
+/**
+ * Renders the end card: a thank-you and a follow ask, text only.
+ *
+ * Drawn on the same dimmed backdrop as the title card, so the video opens and
+ * closes on the same picture. Same type, colours and safe area too, so the two
+ * read as one series.
+ *
+ * The channel name is the one thing on this card the viewer has to remember, so
+ * it is pulled out of the follow line onto its own row and set as a badge - dark
+ * type on an accent box - while the copy around it stays white. The CTA arrives
+ * with `{brand}` still in it for exactly this reason; without the placeholder it
+ * is all plain copy.
+ */
+function renderOutroCard(width, height) {
+  const portrait = height > width;
+  const accent = String(plan.brand?.accent ?? '#F5B544').replace('#', '0x');
+  const brandName = String(plan.brand?.name ?? '').trim();
+  const cardPath = path.join(workDir, `outro_${width}x${height}.png`);
+
+  const caps = (str) => String(str ?? '').replace(/\{brand\}/gi, brandName).trim().toUpperCase();
+  const cta = String(plan.outroCta ?? '');
+  const split = brandName ? cta.match(/^([\s\S]*?)\{brand\}([\s\S]*)$/i) : null;
+  const ctaChars = portrait ? 18 : 30;
+
+  const titleLines = wrapTitle(caps(plan.outroTitle), portrait ? 12 : 20, 3);
+  const beforeLines = wrapTitle(caps(split ? split[1] : cta), ctaChars, 3);
+  const brandLines = split ? wrapTitle(brandName.toUpperCase(), ctaChars, 2) : [];
+  const afterLines = split ? wrapTitle(caps(split[2]), ctaChars, 3) : [];
+
+  const longest = (lines) => Math.max(...lines.map((l) => [...l].length), 1);
+  const titlePx = fitCaps(width, longest(titleLines), width * (portrait ? 0.10 : 0.072));
+  const ctaPx = fitCaps(width, longest([...beforeLines, ...afterLines]), width * (portrait ? 0.052 : 0.036));
+  // Two characters of allowance for the box's side padding, so the badge - not
+  // just its text - stays inside the safe width.
+  const brandPx = fitCaps(width, longest(brandLines) + 2, width * (portrait ? 0.064 : 0.046));
+
+  // One file per line so each centres on its own - see the note in renderCard.
+  const writeLines = (lines, name) => lines.map((line, i) => {
+    const file = path.join(workDir, `outro_${name}_${width}_${i}.txt`);
+    writeTextFile(file, [line]);
+    return file;
+  });
+
+  // Each row knows its own height and how to draw itself at a given top, so the
+  // whole stack can be measured in JS and centred as a block, for the same reason
+  // as the title card.
+  const LINE = 1.18;
+  const textRow = (lines, name, px, colour) => {
+    if (!lines.length) return null;
+    const lead = Math.round(px * 0.22);
+    const step = Math.round(px * LINE) + lead;
+    const files = writeLines(lines, name);
+    return {
+      h: files.length * step - lead,
+      draw: (top) => files.map((file, i) => cardText(file, px, colour, top + i * step)),
+    };
+  };
+  const badgeRow = (lines, px) => {
+    if (!lines.length) return null;
+    const padY = Math.round(px * 0.30);
+    const padX = Math.round(px * 0.55);
+    const lead = Math.round(px * 0.18);
+    const step = Math.round(px * LINE) + 2 * padY + lead;
+    const files = writeLines(lines, 'brand');
+    return {
+      h: files.length * step - lead,
+      // drawtext sizes the box to the text, so no width has to be guessed. No
+      // outline: dark type on a solid box is already the highest contrast here.
+      draw: (top) => files.map((file, i) => [
+        `drawtext=fontfile='${escapeFilterPath(COVER_FONT_BOLD)}'`,
+        `textfile='${escapeFilterPath(file)}'`,
+        'fontcolor=0x0E1014',
+        `fontsize=${px}`,
+        'box=1',
+        `boxcolor=${accent}`,
+        `boxborderw=${padY}|${padX}`,
+        'x=(w-text_w)/2',
+        `y=${top + padY + i * step}`,
+      ].join(':')),
+    };
+  };
+
+  const ruleH = Math.max(3, Math.round(height * 0.0035));
+  const ruleW = Math.round(width * 0.14);
+  const rule = {
+    h: ruleH,
+    // x computed here, never `(w-N)/2` - drawbox reads `w` as 0 at configure time.
+    draw: (top) => [`drawbox=x=${Math.round((width - ruleW) / 2)}:y=${top}:w=${ruleW}:h=${ruleH}:color=${accent}:t=fill`],
+  };
+
+  const gap = Math.round(height * 0.032);
+  const tight = Math.round(height * 0.016);
+  // [row, space after it]; rows with nothing to say drop out with their space.
+  const stack = [
+    [textRow(titleLines, 'title', titlePx, 'white'), gap],
+    [rule, gap],
+    [textRow(beforeLines, 'before', ctaPx, 'white'), tight],
+    [badgeRow(brandLines, brandPx), tight],
+    [textRow(afterLines, 'after', ctaPx, 'white'), 0],
+  ].filter(([row]) => row);
+
+  const blockH = stack.reduce((n, [row, after], i) => n + row.h + (i < stack.length - 1 ? after : 0), 0);
+  // Slightly above centre, clear of TikTok's caption and button rail.
+  let y = Math.round(height * 0.44 - blockH / 2);
+  const filters = stack.flatMap(([row, after]) => {
+    const drawn = row.draw(y);
+    y += row.h + after;
+    return drawn;
+  });
+
+  const { base, dim } = cardBackdrop(width, height);
+
+  ffmpeg([
+    ...base,
+    '-frames:v', '1',
+    '-vf', [...dim, ...filters].join(','),
+    cardPath,
+  ]);
+
+  return cardPath;
+}
+
 const sceneTimeline = sceneForEachSegment();
 const introSec = introMs / 1000;
+const outroSec = outroMs / 1000;
 
 /**
  * The flat fallback, as a still, so that a run with no usable photos takes the
@@ -442,12 +612,17 @@ function flatBackground(width, height) {
   return file;
 }
 
-/** Card first, then the scenes - or the flat still if there were none. */
+/**
+ * Card first, then the scenes - or the flat still if there were none - then the
+ * end card. The end card's transition starts exactly on the last cue boundary,
+ * after that cue's subtitle has already left the screen.
+ */
 function timelineFor(width, height) {
   const body = sceneTimeline
-    ?? [{ file: flatBackground(width, height), hold: durationSec - introSec }];
-  if (!introMs) return body;
-  return [{ file: renderCard(width, height), hold: introSec, raw: true }, ...body];
+    ?? [{ file: flatBackground(width, height), hold: durationSec - introSec - outroSec }];
+  const intro = introMs ? [{ file: renderCard(width, height), hold: introSec, raw: true }] : [];
+  const outro = outroMs ? [{ file: renderOutroCard(width, height), hold: outroSec, raw: true }] : [];
+  return [...intro, ...body, ...outro];
 }
 
 /**
@@ -715,6 +890,8 @@ process.stdout.write(JSON.stringify({
   durationSec: Math.round(durationSec * 100) / 100,
   sizeBytes: rendered[0].sizeBytes,
   introSec,
+  introVoiced: hasIntroVoice,
+  outroSec,
   audio: {
     sampleRate: SR,
     voiceSamples,

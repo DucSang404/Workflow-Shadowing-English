@@ -110,6 +110,10 @@ return [{
     imageSource: ['auto', 'ai', 'stock'].includes(String(body.imageSource ?? '').toLowerCase())
       ? String(body.imageSource).toLowerCase()
       : 'auto',
+    // Claude reviews each generated still against its line and redraws the ones
+    // that miss (host/imagereview). Only matters when the generator is up, and a
+    // reviewer that is not running is skipped the same way. Off by request only.
+    reviewImages: body.reviewImages !== false,
 
     // The branded title card burned onto the front of the video.
     //
@@ -125,6 +129,44 @@ return [{
     // drift this pipeline exists to prevent.
     intro: body.intro !== false,
     introMs: Math.round(clamp(body.introMs, 600, 5000, 1200)),
+
+    // A spoken brand line over that card, so the channel is recognisable with the
+    // phone face-down. It is synthesised through the same Edge TTS path as the
+    // dialogue, which means it costs nothing extra and fails the same way.
+    //
+    // When it is spoken, `introMs` above stops being the intro length: 03_build_srt.js
+    // replaces it with the MEASURED duration of this line plus `introTailMs`. That
+    // keeps one number deciding both the prepended audio and every cue's offset,
+    // which is the whole reason the intro is whole milliseconds. `introMs` stays
+    // the fallback for a silent card (introLine: false, or the TTS call failing).
+    // `{brand}` and `{topic}` are substituted.
+    //
+    // The default opens with the instruction and then names the topic, so every
+    // video starts with the same words and only the tail changes. The cost is
+    // that the line is as long as the topic is: measured on Edge TTS, naming the
+    // topic adds 1.4-2.4 s, so the opening is not the same length on every video.
+    introLine: body.introLine === false ? '' : String(
+      body.introLine ?? 'Listen, repeat, speak: {topic}.',
+    ).trim().slice(0, 200),
+    // The dialogue is read at 0.9 so it can be repeated. The brand line is not
+    // repeated, so it is read at a normal pace - which also saves ~0.7 s.
+    introSpeed: clamp(body.introSpeed, 0.5, 1.5, 1.0),
+    // Breathing room between the brand line and the first sentence. Without it the
+    // learner gets no beat to settle before the first thing they must repeat.
+    introTailMs: Math.round(clamp(body.introTailMs, 0, 3000, 500)),
+
+    // A text-only end card after the last sentence: thank the viewer, ask for the
+    // follow. Silent on purpose - the music bed carries it and fades out over it.
+    //
+    // It sits AFTER every cue, so it shifts none of them; it only makes the file
+    // longer. Whole milliseconds for the same reason as `introMs`: build_video.js
+    // appends exactly `outroMs * 24` samples of silence, and verify-sync.js adds
+    // the same number back when it checks the length of the shipped file.
+    // `{brand}` is substituted in both lines.
+    outro: body.outro !== false,
+    outroMs: Math.round(clamp(body.outroMs, 1000, 8000, 3000)),
+    outroTitle: String(body.outroTitle ?? 'Thanks for watching!').trim().slice(0, 60),
+    outroCta: String(body.outroCta ?? 'Follow {brand} for a new lesson every day').trim().slice(0, 120),
     brand: {
       name: String(body.brandName ?? 'ShawnSpace English'),
       // Warm amber on near-black: the highest-contrast pairing that still looks

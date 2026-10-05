@@ -203,6 +203,106 @@ so sánh ở mục A) — đổi lấy ~4GB model và 20-40s mỗi ảnh.
 
 </details>
 
+### Câu thoại thương hiệu đầu video ✅ (2026-10-04)
+
+Title card trước đây im lặng; giờ có một câu đọc lên để nhận diện kênh.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `introLine` | `"Listen, repeat, speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
+| `introSpeed` | `1.0` | Hội thoại đọc 0.9 để nhại theo; câu này không nhại nên đọc tốc độ thường |
+| `introTailMs` | `500` | Khoảng nghỉ trước câu đầu tiên |
+| `introMs` | `1200` | Giờ chỉ là **fallback** khi không có câu thoại |
+
+**Vì sao mặc định không đọc chủ đề**: đo trên Edge TTS, nhắc chủ đề tốn thêm
+**1.4–2.4s** *và độ dài thay đổi theo từng video* — ngược hẳn mục đích nhận diện,
+vốn cần mở đầu giống hệt nhau. Chủ đề đã hiện trên card và nằm trong caption.
+Muốn đọc thì thêm `{topic}` vào `introLine`.
+
+**Cập nhật 2026-10-05**: mặc định giờ đọc chủ đề, nhưng đặt **sau** câu hướng dẫn —
+`"Listen, repeat, speak: {topic}."` — để mọi video mở đầu bằng cùng mấy chữ, chỉ
+phần đuôi thay đổi theo chủ đề.
+
+Đo thực tế với chủ đề *"a daily standup with the dev team"*: có chủ đề + tốc độ 0.9
+= **7484 ms**; mặc định hiện tại = **4628 ms**, và không đổi theo chủ đề.
+
+Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLine:false`, và câu
+tuỳ biến.
+
+### Claude review ảnh cảnh ✅ (2026-10-05)
+
+Mỗi ảnh SD vẽ ra được Claude (qua `claude -p` trên máy, `host/imagereview/server.js`,
+cổng `127.0.0.1:7861`) đối chiếu với câu thoại: câu nhắc **laptop**, **công ty** thì ảnh
+phải có laptop và văn phòng. Trượt → vẽ lại bằng prompt Claude viết lại (tối đa 3 lần
+vẽ, giữ bản tốt nhất). Ảnh nền title card cũng được review.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `reviewImages` | `true` | `false` = không review. Reviewer không chạy thì tự bỏ qua |
+
+Kết quả nằm trong run record: mỗi scene có `review` (`pass`, `score`, `required`,
+`missing`, `issues`, `draws`, `history` từng lần vẽ), title card ở `coverReview`, và
+webhook trả tóm tắt ở `scenes.passed / failed / redraws`.
+
+**Đo trên run thật** *"reporting a problem with your laptop to IT"* (Groq, 6 câu):
+
+- Cả 6 ảnh giữ lại đều có **văn phòng + laptop**; trước đó cảnh hay trôi sang hành lang
+  hay lớp học.
+- 3/7 qua (gồm ảnh nền), 9 lần vẽ lại. Bốn cảnh "trượt" chỉ vì thiếu **sạc** / **pin**
+  — đồ quá nhỏ cho SD 1.5. Vẽ lại nâng điểm 2 → 4-5.
+- **Thời gian: ~240 s** mỗi video so với ~100 s trước đây; review ~6 s/ảnh. Budget
+  180 s giữ nó dưới timeout 540 s của `daily`.
+
+⚠ Phải chạy reviewer như LaunchAgent (xem `CLAUDE.md`) thì lịch 07:00/19:00 mới có review.
+Mỗi video tốn khoảng 10-20 lần gọi `claude -p` vào hạn mức gói Claude.
+
+### Trang kết cuối video ✅ (2026-10-05)
+
+Sau câu thoại cuối có thêm một trang **chỉ có chữ**: cảm ơn người xem và mời follow
+kênh. Nền là ảnh bối cảnh làm tối, dùng chung với thẻ mở đầu (không có ảnh thì nền phẳng), **không đọc lời**; nhạc nền chạy tiếp và fade out
+đúng trên trang này.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `outro` | `true` | `false` = không có trang kết |
+| `outroMs` | `3000` | 1000–8000, số nguyên mili-giây |
+| `outroTitle` | `"Thanks for watching!"` | Dòng lớn, chữ trắng |
+| `outroCta` | `"Follow {brand} for a new lesson every day"` | Chữ trắng; chỗ `{brand}` được tách ra một dòng riêng thành **badge** (chữ tối trên nền màu nhấn) để tên kênh nổi bật. Không có `{brand}` thì cả dòng là chữ thường |
+
+Trang kết nằm **sau mọi cue** nên không dịch phụ đề nào, chỉ làm file dài thêm.
+Audio được nối thêm đúng `outroMs × 24` sample im lặng (`apad=pad_len`, đếm sample),
+và `verify-sync.js` cộng `outroSec` trong run record vào khi so độ dài file mp4.
+Đo trên stub: `voice=1084512` so với `1012512` khi chưa có trang kết — lệch đúng
+**72000 sample = 3.000 s**, drift **0.0 ms**, độ dài file lệch **0.0 ms** ở cả hai khổ.
+
+### Đăng 2 video/ngày + kho chủ đề 124 + sửa lỗi picker ✅ (2026-10-04)
+
+**Lịch**: `daily` giờ có **hai trigger — 07:00 và 19:00 ICT**, dựng trước mỗi slot
+một tiếng, Buffer đăng lúc **08:00 và 20:00**. Slot do `01_pick_topic.js` chọn
+**theo đồng hồ**, không theo trigger nào vừa chạy, nên một lần chạy tay hoặc một
+build trễ vẫn nhắm vào slot kế tiếp chưa qua thay vì đưa Buffer một mốc quá khứ.
+Đã kiểm lúc 23:55 ICT: tự chuyển sang 08:00 hôm sau.
+
+**Kho chủ đề**: 30 → **124** (thêm 94, đã khử trùng lặp). Ở nhịp 2 video/ngày là
+**62 ngày** mới quay vòng. Nhóm mới gồm công việc/IT, y tế, du lịch, mua sắm, học
+hành, xã giao.
+
+**Sửa lỗi picker — bắt buộc phải làm cùng lúc.** `rank()` trả thẳng `indexOf` trên
+`history` vốn **newest-first**, nên index nhỏ = *mới dùng*, và sort tăng dần chọn
+đúng cái vừa dùng. Khi mọi chủ đề đã chạy một lượt, kênh sẽ đăng **một chủ đề duy
+nhất mãi mãi**, không lỗi nào bắn ra. Tăng lên 2 video/ngày khiến nó cắn nhanh gấp
+đôi.
+
+Đã sửa thành `-i` (và `-Infinity` cho chủ đề chưa dùng), chứng minh bằng mô phỏng:
+
+| | kết quả |
+|---|---|
+| pool 3, chạy 12 lần | `c a b c a b c a b c a b` — mỗi chủ đề 4 lần |
+| pool 5, chạy 25 lần | khoảng cách lặp gần nhất = **5** = đúng kích thước pool |
+
+Chủ đề **chưa từng dùng** được chọn ngẫu nhiên trong nhóm đó thay vì theo thứ tự
+file, để một lô vừa thêm không đi ra thành khối liền nhau.
+
 ---
 
 ## Roadmap
