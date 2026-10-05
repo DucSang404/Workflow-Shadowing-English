@@ -137,12 +137,12 @@ return [{
     // the fallback for a silent card (introLine: false, or the TTS call failing).
     // `{brand}` and `{topic}` are substituted.
     //
-    // The default names the topic and then tells the learner what to do with it,
-    // which is the job the opening actually has to do. The cost is that the line
-    // is as long as the topic is: measured on Edge TTS, naming the topic adds
-    // 1.4-2.4 s, so the opening is not the same length on every video.
+    // The default opens with the instruction and then names the topic, so every
+    // video starts with the same words and only the tail changes. The cost is
+    // that the line is as long as the topic is: measured on Edge TTS, naming the
+    // topic adds 1.4-2.4 s, so the opening is not the same length on every video.
     introLine: body.introLine === false ? '' : String(
-      body.introLine ?? '{topic}. Listen, repeat and speak.',
+      body.introLine ?? 'Listen, repeat, speak: {topic}.',
     ).trim().slice(0, 200),
     // The dialogue is read at 0.9 so it can be repeated. The brand line is not
     // repeated, so it is read at a normal pace - which also saves ~0.7 s.
@@ -150,6 +150,19 @@ return [{
     // Breathing room between the brand line and the first sentence. Without it the
     // learner gets no beat to settle before the first thing they must repeat.
     introTailMs: Math.round(clamp(body.introTailMs, 0, 3000, 500)),
+
+    // A text-only end card after the last sentence: thank the viewer, ask for the
+    // follow. Silent on purpose - the music bed carries it and fades out over it.
+    //
+    // It sits AFTER every cue, so it shifts none of them; it only makes the file
+    // longer. Whole milliseconds for the same reason as `introMs`: build_video.js
+    // appends exactly `outroMs * 24` samples of silence, and verify-sync.js adds
+    // the same number back when it checks the length of the shipped file.
+    // `{brand}` is substituted in both lines.
+    outro: body.outro !== false,
+    outroMs: Math.round(clamp(body.outroMs, 1000, 8000, 3000)),
+    outroTitle: String(body.outroTitle ?? 'Thanks for watching!').trim().slice(0, 60),
+    outroCta: String(body.outroCta ?? 'Follow {brand} for a new lesson every day').trim().slice(0, 120),
     brand: {
       name: String(body.brandName ?? 'ShawnSpace English'),
       // Warm amber on near-black: the highest-contrast pairing that still looks

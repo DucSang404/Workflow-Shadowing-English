@@ -509,6 +509,11 @@ ai để ý.
 Thẻ được đánh dấu `raw` trong scene chain nên **không bị làm tối và không bị phủ
 scrim** như ảnh cảnh — nó đã được thiết kế sẵn, dimming sẽ làm chết màu nhấn.
 
+**Trang kết** (`renderOutroCard()`) là phần cuối của cùng timeline đó, cũng `raw`. Nó
+nằm sau cue cuối nên không dịch phụ đề, nhưng **file dài thêm `outroSec`** — audio
+được nối thêm bằng `apad=pad_len` (sample), và `verify-sync.js` phải cộng
+`record.outroSec` khi so độ dài mp4, không thì báo lệch đúng bằng độ dài trang kết.
+
 ### Sinh ảnh cảnh bằng SD 1.5 (chạy trên host)
 
 **Không thể đưa vào `docker-compose`.** Docker Desktop trên macOS không với được

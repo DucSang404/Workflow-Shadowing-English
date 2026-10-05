@@ -56,9 +56,14 @@ const musicOn = record.music?.used === true;
 // two ever disagreed the whole video would be out by the length of the card -
 // precisely the failure this script exists to catch.
 const introSec = Number(record.introSec ?? 0);
+// The end card follows the last cue, so it moves no subtitle - but the shipped
+// file is that much longer than the cue arithmetic, and the length check below
+// has to know it.
+const outroSec = Number(record.outroSec ?? 0);
 
 console.log(`run ${runId} — "${record.topic}"  gap=${record.gapSeconds}s  cues=${cues.length}`
   + (introSec ? `  intro=${introSec}s` : '  intro=off')
+  + (outroSec ? `  outro=${outroSec}s` : '  outro=off')
   + (musicOn ? `  music=${record.music.db}dB (${record.music.source})` : '  music=off'));
 
 // A music bed is mixed under the speech before the video is encoded, and the one
@@ -101,7 +106,7 @@ for (const out of record.outputs ?? []) {
   }
   const actual = parseFloat(inContainer(['ffprobe', '-v', 'error',
     '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', out.path]).trim());
-  results.push({ ...out, actual, delta: Math.abs(actual - cursor) });
+  results.push({ ...out, actual, delta: Math.abs(actual - (cursor + outroSec)) });
 }
 
 /**
@@ -170,7 +175,8 @@ if (primary) {
 }
 
 console.log(`\n  worst cue drift : ${worstMs.toFixed(1)} ms  (tolerance ${TOLERANCE_MS} ms)`);
-console.log(`  timeline total  : ${cursor.toFixed(3)} s`);
+console.log(`  timeline total  : ${(cursor + outroSec).toFixed(3)} s`
+  + (outroSec ? `  (cues end ${cursor.toFixed(3)} s + ${outroSec} s end card)` : ''));
 if (worstOnsetMs !== null) {
   console.log(`  worst onset gap : ${worstOnsetMs.toFixed(0)} ms  (measured in the shipped mp4)`);
 }

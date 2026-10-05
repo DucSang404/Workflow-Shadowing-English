@@ -53,6 +53,9 @@ try {
     introLine: srt.introLine ?? null,
     introMs: srt.introMs ?? 0,
     introVoiced: Boolean(srt.introLine),
+    // The end card lengthens the file without moving any cue; host/verify-sync.js
+    // adds it back when it compares the timeline with the shipped mp4.
+    outroSec: srt.outroSec ?? 0,
     brand: cfg.brand,
     voices: { A: cfg.voiceA, B: cfg.voiceB },
     speed: cfg.speed,
@@ -121,6 +124,7 @@ return [{
       // Present only when the brand line failed TTS and the card fell back to silence.
       missing: srt.introMissing ?? null,
     },
+    outroSec: srt.outroSec ?? 0,
     scenes: {
       used: (srt.scenes ?? []).length,
       missing: srt.scenesMissing ?? [],

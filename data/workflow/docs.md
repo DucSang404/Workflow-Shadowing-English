@@ -209,7 +209,7 @@ Title card trước đây im lặng; giờ có một câu đọc lên để nh�
 
 | Tham số | Mặc định | Ghi chú |
 |---|---|---|
-| `introLine` | `"Welcome to {brand}. Let's practice shadowing."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
+| `introLine` | `"Listen, repeat, speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
 | `introSpeed` | `1.0` | Hội thoại đọc 0.9 để nhại theo; câu này không nhại nên đọc tốc độ thường |
 | `introTailMs` | `500` | Khoảng nghỉ trước câu đầu tiên |
 | `introMs` | `1200` | Giờ chỉ là **fallback** khi không có câu thoại |
@@ -219,11 +219,34 @@ Title card trước đây im lặng; giờ có một câu đọc lên để nh�
 vốn cần mở đầu giống hệt nhau. Chủ đề đã hiện trên card và nằm trong caption.
 Muốn đọc thì thêm `{topic}` vào `introLine`.
 
+**Cập nhật 2026-10-05**: mặc định giờ đọc chủ đề, nhưng đặt **sau** câu hướng dẫn —
+`"Listen, repeat, speak: {topic}."` — để mọi video mở đầu bằng cùng mấy chữ, chỉ
+phần đuôi thay đổi theo chủ đề.
+
 Đo thực tế với chủ đề *"a daily standup with the dev team"*: có chủ đề + tốc độ 0.9
 = **7484 ms**; mặc định hiện tại = **4628 ms**, và không đổi theo chủ đề.
 
 Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLine:false`, và câu
 tuỳ biến.
+
+### Trang kết cuối video ✅ (2026-10-05)
+
+Sau câu thoại cuối có thêm một trang **chỉ có chữ**: cảm ơn người xem và mời follow
+kênh. Nền là ảnh bối cảnh làm tối, dùng chung với thẻ mở đầu (không có ảnh thì nền phẳng), **không đọc lời**; nhạc nền chạy tiếp và fade out
+đúng trên trang này.
+
+| Tham số | Mặc định | Ghi chú |
+|---|---|---|
+| `outro` | `true` | `false` = không có trang kết |
+| `outroMs` | `3000` | 1000–8000, số nguyên mili-giây |
+| `outroTitle` | `"Thanks for watching!"` | Dòng lớn, chữ trắng |
+| `outroCta` | `"Follow {brand} for a new lesson every day"` | Dòng màu nhấn; `{brand}` được thay |
+
+Trang kết nằm **sau mọi cue** nên không dịch phụ đề nào, chỉ làm file dài thêm.
+Audio được nối thêm đúng `outroMs × 24` sample im lặng (`apad=pad_len`, đếm sample),
+và `verify-sync.js` cộng `outroSec` trong run record vào khi so độ dài file mp4.
+Đo trên stub: `voice=1084512` so với `1012512` khi chưa có trang kết — lệch đúng
+**72000 sample = 3.000 s**, drift **0.0 ms**, độ dài file lệch **0.0 ms** ở cả hai khổ.
 
 ### Đăng 2 video/ngày + kho chủ đề 124 + sửa lỗi picker ✅ (2026-10-04)
 

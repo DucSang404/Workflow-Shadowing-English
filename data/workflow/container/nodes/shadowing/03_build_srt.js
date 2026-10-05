@@ -56,6 +56,12 @@ const introMs = (() => {
 })();
 const introSec = introMs / 1000;
 
+// The end card comes after the last cue, so it moves no subtitle - it only
+// lengthens the file. Carried in the plan so build_video.js appends exactly this
+// much silence and draws the card for exactly this long.
+const outroMs = cfg.outro ? cfg.outroMs : 0;
+const withBrand = (s) => String(s ?? '').replace(/\{brand\}/gi, cfg.brand.name).trim();
+
 let cursor = introSec;
 const cues = segments.map((seg, i) => {
   const start = cursor;
@@ -116,6 +122,9 @@ const plan = {
   introMs,
   introWav: introAudio?.wav ?? null,
   introLine: introAudio?.en ?? null,
+  outroMs,
+  outroTitle: withBrand(cfg.outroTitle),
+  outroCta: withBrand(cfg.outroCta),
   brand: cfg.brand,
   coverBackground,
   scenes: scenes.map((sc) => ({ idx: sc.idx, file: sc.file })),
@@ -148,6 +157,7 @@ return [{
     music,
     musicReason,
     introSec,
-    expectedDurationSec: Math.round(cursor * 100) / 100,
+    outroSec: outroMs / 1000,
+    expectedDurationSec: Math.round((cursor + outroMs / 1000) * 100) / 100,
   },
 }];
