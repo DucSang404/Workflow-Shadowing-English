@@ -4,7 +4,7 @@ Cập nhật: 2026-10-04
 
 - **Workflow chính**: `JwSXDLLsNxY3e9CV` — active, `POST http://localhost:5678/webhook/shadowing`
 - **Workflow stub**: `jyx9sYJhVo74D48Q` — active, `/webhook/shadowing-stub`, thay node Groq bằng hội thoại canned (test pipeline không tốn quota)
-- **Chạy tự động**: workflow `daily` — dựng 18:00, Buffer đăng 19:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics/pool.json` theo *ít dùng gần đây nhất* (lượt dùng ghi ở `topics/state.json`); pool gần cạn thì Claude tự thêm topic.
+- **Chạy tự động**: workflow `daily` — dựng 07:00 và 19:00, Buffer đăng 08:00 và 20:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics/pool.json` theo *ít dùng gần đây nhất* (lượt dùng ghi ở `topics/state.json`); pool gần cạn thì Claude tự thêm topic.
 - **Workflow đăng TikTok**: `/webhook/buffer-publish` — S3 → Buffer → TikTok công khai. **Chờ điền khoá**, xem mục B.
 - **Đường dự phòng**: `/webhook/tiktok-publish` — gọi thẳng TikTok, chỉ bỏ được draft vào hộp thư. Bị chặn ở Login Kit, xem mục B.
 - **Stack**: n8n 2.36.9 (+ffmpeg static) · `travisvn/openai-edge-tts` · Groq `openai/gpt-oss-120b`

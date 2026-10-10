@@ -225,8 +225,8 @@ curl -X POST http://localhost:5678/webhook/shadowing \
 
 ### Chạy tự động mỗi ngày
 
-Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **18:00** và hẹn Buffer
-đăng lúc **19:00** cùng ngày, múi giờ `Asia/Ho_Chi_Minh`. Nó gọi lại chính hai
+Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **07:00 và 19:00** và hẹn Buffer
+đăng lúc **08:00 và 20:00** cùng ngày, múi giờ `Asia/Ho_Chi_Minh`. Nó gọi lại chính hai
 webhook `shadowing` và `buffer-publish` chứ không nhân bản node của chúng — hai
 endpoint đó là thứ đã được bấm tay suốt quá trình, một đường chạy khác sẽ là thêm
 một thứ nữa phải tin. Một tiếng dự phòng giữa dựng và đăng là có chủ ý: dựng mất
@@ -267,7 +267,7 @@ là container dừng:
 
 ```bash
 caffeinate -s                                      # giữ thức, chạy trong 1 terminal
-sudo pmset repeat wakeorpoweron MTWRFSU 17:55:00   # hoặc tự thức trước 18:00
+sudo pmset repeat wakeorpoweron MTWRFSU 06:55:00   # hoặc tự thức trước 07:00 (lịch 19:00 thì máy thường đang thức)
 ```
 
 **Generator ảnh không còn dùng** (2026-10-10). Nếu LaunchAgent cũ còn nạp thì gỡ
@@ -278,7 +278,7 @@ launchctl unload ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
 rm ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
 ```
 
-**Reviewer phải chạy lúc 18:00**, không thì mọi cảnh lấy ứng viên đầu tiên, không ai chấm:
+**Reviewer phải chạy lúc 07:00 và 19:00**, không thì mọi cảnh lấy ứng viên đầu tiên, không ai chấm:
 
 ```bash
 cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
