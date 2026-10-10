@@ -2,36 +2,30 @@
 /**
  * usage: node fetch_scenes.js <sentenceDir>
  *
- * Finds one still per sentence and downloads it to <dir>/scene_NNN.jpg.
+ * Finds one stock photo per sentence, plus one for the title-card backdrop, and
+ * saves them as <dir>/scene_NNN.jpg and <dir>/cover_bg.jpg.
  *
- * Three sources, in order:
- *   0. Local generator - SD 1.5 + LCM on the HOST at host.docker.internal:7860.
- *                    Docker on macOS cannot reach the GPU, so it cannot live in
- *                    compose. Tried first because it is the only source that
- *                    always matches the sentence: limitation #13 in docs.md
- *                    measured 2 usable photos out of 8 from the CC0 archives on
- *                    an office topic.
- *   1. Pexels      - polished stock, needs a key. The key never reaches this
- *                    script: the workflow's Pexels node (which holds the n8n
- *                    credential) writes its results to pexels.json first, and
- *                    this script only reads those. See CLAUDE.md, "Secrets".
- *   2. Openverse   - Creative Commons photos, keyless, so scenes still work with
- *                    no Pexels key configured at all.
+ * Candidates come from two places, in order:
+ *   1. stock.json - Unsplash and Pexels results, interleaved. The workflow's HTTP
+ *                   nodes hold the API keys and write this file; this script never
+ *                   sees a key. See CLAUDE.md, "Secrets".
+ *   2. Openverse  - Creative Commons photos, keyless. Searched only once the stock
+ *                   list runs out, because it is the slow one: each query tier is
+ *                   a separate request.
  *
- * The generator is a preference, not a dependency: if it does not answer, the
- * run falls through to the stock tiers and nothing fails.
+ * Claude (host/imagereview, :7861) scores the candidates 0-100 against the line,
+ * four per call. The best one at or above `manifest.passScore` (72 unless the
+ * caller set it) is used. When none reaches it a second batch of four is tried,
+ * and after that the highest score is used anyway and recorded as a fail: a weak
+ * picture beats a hole in the video.
  *
- * Every generated still is then shown to Claude (host/imagereview, :7861), which
- * checks it against the line it illustrates - a line about a laptop at the office
- * has to show a laptop and an office - and against the character's hair and
- * clothes. A still that fails is redrawn from the prompt Claude rewrote, and the
- * best draw is kept. The reviewer is optional in the same way the generator is.
+ * No photo is used twice in one video. The reviewer is optional: down, switched
+ * off or out of budget, a scene takes its first candidate that decodes.
  *
- * The important design point is that a search yields *candidates*, not an answer.
- * Openverse indexes many providers and some of them (Wikimedia in particular)
- * answer this host with HTTP 429 while others serve happily, so taking only the
- * top hit lost 4 of 6 scenes. Every candidate is tried until one downloads and
- * decodes.
+ * A search yields *candidates*, not an answer. Openverse indexes many providers
+ * and some of them (Wikimedia in particular) answer this host with HTTP 429 while
+ * others serve happily, so taking only the top hit lost 4 of 6 scenes. Every
+ * candidate is tried until enough download and decode.
  *
  * A sentence with no usable image is reported in `missing`; build_video.js falls
  * back to the plain background for it rather than failing the run.
@@ -39,6 +33,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { pickBest, candidateKey } = require('./lib/pick_best');
 
 const dir = process.argv[2];
 
@@ -48,26 +43,25 @@ const SEARCH_TIMEOUT_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 45000;
 const MAX_PARALLEL = 3;               // be a polite guest on a keyless public API
 const NORMALISE_WIDTH = 1920;         // every scene is downscaled to this at most
-const MAX_CANDIDATES = 10;
+const MAX_CANDIDATES = 10;            // per Openverse search, across its tiers
 
-const IMAGEGEN_URL = 'http://host.docker.internal:7860';
-// Short: this only asks whether the service is up, and that answer decides
-// whether six generate calls are worth attempting at all.
-const IMAGEGEN_HEALTH_MS = 1500;
-// Generous: four LCM steps on an M2 is seconds, but the first call of a session
-// also pays for the model being paged in.
-const IMAGEGEN_MS = 120000;
+// What Claude is shown. Four full 1920 px frames make a slow, token-heavy request
+// and judge no better than 768 px does.
+const THUMB_WIDTH = 768;
+const BATCH_SIZE = 4;
+// A second batch rescues scenes whose first four were near misses; past that the
+// candidates are the search's long tail and rarely better.
+const MAX_BATCHES = 2;
 
 const IMAGEREVIEW_URL = 'http://host.docker.internal:7861';
-// One `claude -p` call is ~5 s; this also covers waiting behind the reviewer's
+// Short: this only asks whether the service is up.
+const IMAGEREVIEW_HEALTH_MS = 1500;
+// One four-image call is ~10 s; this also covers waiting behind the reviewer's
 // two-call concurrency limit.
-const IMAGEREVIEW_MS = 100000;
-// Draws per still, the first included. Each redraw uses the prompt Claude rewrote
-// for exactly what was missing, so a third attempt is where returns run out.
-const MAX_DRAWS = 3;
-// No new redraws after this long. The daily workflow gives the whole build 540 s
+const IMAGEREVIEW_MS = 150000;
+// No new batches after this long. The daily workflow gives the whole build 540 s
 // and a normal one takes ~100 s, so a slow or rate-limited reviewer must not be
-// able to spend the rest. Whatever was drawn by then is kept.
+// able to spend the rest.
 const REVIEW_BUDGET_MS = 180000;
 const startedAt = Date.now();
 
@@ -81,15 +75,16 @@ const UA = 'shadowing-video/1.0 (self-hosted n8n pipeline; +https://github.com/n
 const LICENCE_TIERS = ['cc0,pdm', 'by'];
 
 const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+const passScore = Number.isFinite(manifest.passScore) ? manifest.passScore : 72;
 
-// Written by the workflow's Pexels node when a key is configured; absent otherwise.
-let pexelsByIdx = {};
-const pexelsFile = path.join(dir, 'pexels.json');
-if (fs.existsSync(pexelsFile)) {
+// Written by the workflow's Collect Stock node; absent when it never ran.
+let stock = {};
+const stockFile = path.join(dir, 'stock.json');
+if (fs.existsSync(stockFile)) {
   try {
-    pexelsByIdx = JSON.parse(fs.readFileSync(pexelsFile, 'utf8'));
+    stock = JSON.parse(fs.readFileSync(stockFile, 'utf8'));
   } catch {
-    pexelsByIdx = {};
+    stock = {};
   }
 }
 
@@ -142,9 +137,12 @@ async function openverseSearch(query, licence) {
     // down to 1920 immediately anyway.
     .filter((r) => r.url && (r.width ?? 0) >= 900 && (r.width ?? 0) <= 5000)
     .map((r) => ({
-      url: r.url,
       source: 'openverse',
+      id: r.id ?? null,
+      url: r.url,
       license: r.license,
+      photographer: r.creator ?? null,
+      link: r.foreign_landing_url ?? null,
       matchedQuery: query,
       // Only a `by` image obliges the uploader to print a credit.
       attribution: r.license === 'by'
@@ -209,196 +207,159 @@ async function download(url, dest) {
   }
 }
 
+let reviewerUp = false;
+let reviewCalls = 0;
+// candidateKey() of every still already chosen. Choosing and adding happen with
+// no `await` in between, so scenes running side by side cannot take the same one.
+const used = new Set();
+
 /**
- * Asks the host generator for one scene. Returns null when it is not running,
- * which is the normal case for anyone who has not started it.
+ * Stock results first, Openverse only once those run out. A generator, so the
+ * slow Openverse search is never made for a scene the stock list already covered.
  */
-async function generateScene(sentence, dest, trace, prompt) {
-  try {
-    const { buf, seconds } = await onGpu(() => withTimeout(`${IMAGEGEN_URL}/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // imagePrompt, NOT imageQuery. The query is keywords for a stock index and
-      // a diffusion model reads it as noise - measured, it returned a Persian
-      // manuscript for "team standup meeting office whiteboard". The prompt is
-      // the same scene written as a sentence, which works.
-      body: JSON.stringify({
-        prompt,
-        // Which of the two recurring characters is speaking this line. The
-        // dialogue already alternates A and B, so the series gets a consistent
-        // cast for free - the generator looks up assets/characters/<A|B>.png and
-        // conditions on it.
-        character: sentence.speaker ?? null,
-      }),
-    }, IMAGEGEN_MS).then(async (r) => {
-      if (!r.ok) throw new Error(`http ${r.status} ${(await r.text().catch(() => '')).slice(0, 120)}`);
-      return { buf: Buffer.from(await r.arrayBuffer()), seconds: Number(r.headers.get('x-generate-seconds')) || null };
-    }));
+async function* candidatesFor(job, trace) {
+  yield* (stock[job.idx] ?? []);
+  yield* await openverseCandidates(job.query, manifest.topic, trace);
+}
 
-    if (buf.length < MIN_BYTES) throw new Error(`too small (${buf.length} bytes)`);
-
-    const raw = `${dest}.raw`;
-    fs.writeFileSync(raw, buf);
+/** Downloads candidates from `it` until `pool` holds `target` decodable stills. */
+async function fill(pool, it, target, prefix, trace) {
+  while (pool.length < target) {
+    const { value: c, done } = await it.next();
+    if (done) return;
+    const key = candidateKey(c);
+    if (used.has(key) || pool.some((p) => p.key === key)) continue;
+    const file = path.join(dir, `${prefix}_c${pool.length + 1}.jpg`);
     try {
-      // Same rule as a download: let ffmpeg decode it before believing it.
-      execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', raw,
-        '-vf', `scale='min(${NORMALISE_WIDTH},iw)':-2`, '-q:v', '4', dest], { stdio: 'pipe' });
-    } finally {
-      fs.rmSync(raw, { force: true });
+      await download(c.url, file);
+      pool.push({ ...c, key, file });
+    } catch (err) {
+      trace.push(`${new URL(c.url).host}: ${err.message}`);
     }
-
-    return {
-      idx: sentence.idx,
-      file: dest,
-      query: prompt,
-      matchedQuery: prompt,
-      source: 'generated',
-      license: null,
-      attribution: null,
-      generateSeconds: seconds,
-    };
-  } catch (err) {
-    trace.push(`imagegen: ${err.message}`);
-    return null;
   }
 }
 
-// One GPU. Two scenes are worked on at once so Claude can review one while the
-// next is being drawn, but the draws themselves still go strictly one at a time.
-let gpuQueue = Promise.resolve();
-function onGpu(fn) {
-  const run = gpuQueue.then(fn, fn);
-  gpuQueue = run.catch(() => {});
-  return run;
-}
+/** Claude's scores for one batch, in batch order. Throws when it cannot give them. */
+async function reviewBatch(job, batch) {
+  const images = batch.map((c, n) => {
+    const thumb = c.file.replace(/\.jpg$/, '_thumb.jpg');
+    try {
+      execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', c.file,
+        '-vf', `scale='min(${THUMB_WIDTH},iw)':-2`, '-q:v', '5', thumb], { stdio: 'pipe' });
+      return { id: `c${n + 1}`, mediaType: 'image/jpeg', data: fs.readFileSync(thumb).toString('base64') };
+    } finally {
+      fs.rmSync(thumb, { force: true });
+    }
+  });
 
-/** Claude's verdict on one still. Throws when the reviewer cannot give one. */
-async function reviewStill(file, { kind, line, character, prompt }) {
+  reviewCalls += 1;
   const res = await withTimeout(`${IMAGEREVIEW_URL}/review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      image: fs.readFileSync(file).toString('base64'),
-      mediaType: 'image/jpeg',
-      kind,
+      kind: job.cover ? 'cover' : 'scene',
       topic: manifest.topic,
-      line: line ? { idx: line.idx, en: line.en, vi: line.vi } : null,
+      line: job.cover ? null : { idx: job.idx, en: job.en, vi: job.vi },
       // The whole exchange, so "that" in "any syrup with that?" can be resolved.
       dialogue: manifest.sentences.map(({ idx, speaker, en }) => ({ idx, speaker, en })),
-      character,
-      prompt,
+      images,
     }),
   }, IMAGEREVIEW_MS);
   if (!res.ok) throw new Error(`http ${res.status} ${(await res.text().catch(() => '')).slice(0, 160)}`);
-  return res.json();
-}
 
-/**
- * Draws a still, has Claude review it, and redraws from Claude's rewritten
- * prompt until one passes, MAX_DRAWS is reached or the budget is spent. Keeps the
- * best draw: a pass beats a fail, then the higher score, then the earlier draw.
- *
- * With no reviewer this is exactly one plain draw, as before.
- */
-async function drawReviewed(sentence, dest, trace, kind) {
-  const original = sentence.imagePrompt || sentence.imageQuery || manifest.topic;
-  if (!reviewerUp) return generateScene(sentence, dest, trace, original);
-
-  const draws = [];
-  let prompt = original;
-  let reviewError = null;
-  for (let n = 1; n <= MAX_DRAWS; n += 1) {
-    const made = await generateScene(sentence, dest.replace(/\.jpg$/, `_draw${n}.jpg`), trace, prompt);
-    if (!made) break;
-
-    let verdict = null;
-    try {
-      verdict = await reviewStill(made.file, {
-        kind, line: kind === 'scene' ? sentence : null, character: sentence.speaker ?? null, prompt,
-      });
-    } catch (err) {
-      // A reviewer that cannot answer is not a reason to lose the picture.
-      reviewError = err.message;
-      trace.push(`review: ${err.message}`);
-    }
-    draws.push({ made, verdict, prompt });
-    if (!verdict || verdict.pass) break;
-    if (Date.now() - startedAt > REVIEW_BUDGET_MS) {
-      trace.push('review budget spent');
-      break;
-    }
-    prompt = String(verdict.revisedPrompt ?? '').trim() || original;
-  }
-  if (!draws.length) return null;
-
-  const rank = (d) => (d.verdict?.pass ? 100 : 0) + (d.verdict?.score ?? -1);
-  const best = draws.reduce((a, b) => (rank(b) > rank(a) ? b : a));
-  fs.renameSync(best.made.file, dest);
-  for (const d of draws) if (d !== best) fs.rmSync(d.made.file, { force: true });
-
-  const v = best.verdict;
+  const body = await res.json();
+  const byId = Object.fromEntries((body.scores ?? []).map((s) => [s.id, s]));
   return {
-    ...best.made,
-    file: dest,
-    review: v
-      ? {
-        pass: v.pass, score: v.score, required: v.required, missing: v.missing,
-        characterOk: v.characterOk, issues: v.issues, draws: draws.length, model: v.model,
-        // Every draw, so a scene that never passed shows what was tried.
-        history: draws.map((d) => ({
-          prompt: d.prompt, pass: d.verdict?.pass ?? null, score: d.verdict?.score ?? null,
-          missing: d.verdict?.missing ?? null,
-        })),
-      }
-      : { pass: null, skipped: reviewError ?? 'not reviewed', draws: draws.length },
+    required: body.required ?? [],
+    model: body.model ?? null,
+    scores: batch.map((c, n) => {
+      const s = byId[`c${n + 1}`];
+      if (!s) throw new Error(`reviewer returned no score for c${n + 1}`);
+      return { score: s.score, present: s.present ?? [], missing: s.missing ?? [], issues: s.issues ?? [] };
+    }),
   };
 }
 
-async function resolveScene(sentence) {
-  const tag = String(sentence.idx).padStart(3, '0');
-  const dest = path.join(dir, `scene_${tag}.jpg`);
-  const query = sentence.imageQuery || manifest.topic;
+/** One scene (or the cover): gather, review in batches, choose, keep one file. */
+async function resolveJob(job) {
   const trace = [];
+  const prefix = job.cover ? 'cover' : `scene_${String(job.idx).padStart(3, '0')}`;
+  const dest = path.join(dir, job.cover ? 'cover_bg.jpg' : `${prefix}.jpg`);
+  const it = candidatesFor(job, trace);
+  const pool = [];
+  const scored = [];
+  let batches = 0;
+  let required = [];
+  let model = null;
+  let skipped = reviewerUp ? null : 'reviewer off';
 
-  if (generatorUp) {
-    const made = await drawReviewed(sentence, dest, trace, 'scene');
-    if (made) return made;
+  await fill(pool, it, BATCH_SIZE, prefix, trace);
+  while (!skipped && batches < MAX_BATCHES && scored.length < pool.length) {
+    if (Date.now() - startedAt > REVIEW_BUDGET_MS) {
+      skipped = 'review budget spent';
+      break;
+    }
+    const batch = pool.slice(scored.length, scored.length + BATCH_SIZE);
+    try {
+      const verdict = await reviewBatch(job, batch);
+      batches += 1;
+      required = verdict.required;
+      model = verdict.model;
+      batch.forEach((c, n) => scored.push({ ...c, ...verdict.scores[n] }));
+    } catch (err) {
+      // A reviewer that cannot answer is not a reason to lose the picture.
+      trace.push(`review: ${err.message}`);
+      if (!scored.length) skipped = err.message;
+      break;
+    }
+    if (pickBest(scored, passScore, used).pass) break;
+    if (batches < MAX_BATCHES) await fill(pool, it, pool.length + BATCH_SIZE, prefix, trace);
   }
-  if (wantsOnlyAi) {
+
+  let choice = null;
+  let pass = null;
+  if (scored.length) ({ choice, pass } = pickBest(scored, passScore, used));
+  if (!choice) {
+    choice = pool.find((c) => !used.has(c.key)) ?? null;
+    pass = null;
+    if (scored.length && !skipped) skipped = 'every scored candidate was taken by another scene';
+  }
+
+  // By file, not identity: a scored choice is a copy of its pool entry.
+  for (const c of pool) if (!choice || c.file !== choice.file) fs.rmSync(c.file, { force: true });
+  if (!choice) {
     return {
-      idx: sentence.idx, query, missing: true,
-      reason: trace.slice(-2).join(' | ') || 'generator produced nothing',
+      idx: job.idx, cover: job.cover || undefined, query: job.query, missing: true,
+      reason: trace.slice(-4).join(' | ') || 'no candidates',
     };
   }
+  used.add(choice.key);
+  fs.renameSync(choice.file, dest);
 
-  const candidates = [];
-  if (pexelsByIdx[sentence.idx]) {
-    candidates.push({ url: pexelsByIdx[sentence.idx], source: 'pexels', license: 'pexels', attribution: null });
-  }
-  candidates.push(...await openverseCandidates(query, manifest.topic, trace));
-
-  for (const candidate of candidates) {
-    try {
-      await download(candidate.url, dest);
-      return {
-        idx: sentence.idx,
-        file: dest,
-        query,
-        matchedQuery: candidate.matchedQuery ?? query,
-        source: candidate.source,
-        license: candidate.license ?? null,
-        attribution: candidate.attribution ?? null,
-      };
-    } catch (err) {
-      trace.push(`${new URL(candidate.url).host}: ${err.message}`);
+  const review = Number.isFinite(choice.score)
+    ? {
+      score: choice.score, pass, passScore, required,
+      missing: choice.missing, issues: choice.issues,
+      batches, reviewed: scored.length, model,
+      // Every candidate Claude saw, so a scene that failed shows what was on offer.
+      candidates: scored.map(({ source, id, score }) => ({ source, id, score })),
     }
-  }
+    : { pass: null, skipped: skipped ?? 'not reviewed', passScore };
 
   return {
-    idx: sentence.idx,
-    query,
-    missing: true,
-    reason: trace.slice(-4).join(' | ') || 'no candidates',
+    idx: job.idx,
+    cover: job.cover || undefined,
+    file: dest,
+    query: job.query,
+    matchedQuery: choice.matchedQuery ?? job.query,
+    source: choice.source,
+    id: choice.id ?? null,
+    photographer: choice.photographer ?? null,
+    link: choice.link ?? null,
+    license: choice.license ?? choice.source,
+    attribution: choice.attribution ?? null,
+    ...(choice.downloadLocation ? { downloadLocation: choice.downloadLocation } : {}),
+    review,
   };
 }
 
@@ -416,96 +377,55 @@ async function mapWithLimit(items, limit, worker) {
   return results;
 }
 
-const wantsStock = (manifest.imageSource ?? 'auto') === 'stock';
-const wantsOnlyAi = (manifest.imageSource ?? 'auto') === 'ai';
-let generatorUp = false;
-let reviewerUp = false;
-
-/** One probe for the whole run, rather than a dead connection per sentence. */
-async function generatorAvailable() {
-  if (wantsStock) return false;
-  try {
-    return (await withTimeout(`${IMAGEGEN_URL}/health`, {}, IMAGEGEN_HEALTH_MS)).ok;
-  } catch {
-    return false;
-  }
-}
-
-/** Same idea for the reviewer, asked only when there is something to review. */
+/** One probe for the whole run, rather than a dead connection per scene. */
 async function reviewerAvailable() {
-  if (!generatorUp || manifest.reviewImages === false) return false;
+  if (manifest.reviewImages === false) return false;
   try {
-    return (await withTimeout(`${IMAGEREVIEW_URL}/health`, {}, IMAGEGEN_HEALTH_MS)).ok;
+    return (await withTimeout(`${IMAGEREVIEW_URL}/health`, {}, IMAGEREVIEW_HEALTH_MS)).ok;
   } catch {
     return false;
   }
 }
 
 (async () => {
-  generatorUp = await generatorAvailable();
   reviewerUp = await reviewerAvailable();
-  if (wantsOnlyAi && !generatorUp) {
-    // Asked for generated pictures only, and the generator is not running. Say
-    // so rather than quietly shipping a video with no scenes at all.
-    console.error('imageSource=ai but the generator at host.docker.internal:7860 is not answering');
-    process.exit(1);
-  }
 
-  // Sentences are independent and each may walk a cascade of searches, so running
-  // them serially took 31s for six lines. Unbounded parallelism was faster but
-  // tripped rate limits, so it is capped instead.
-  //
-  // One at a time once the generator is in play: there is a single GPU, so
-  // concurrent requests only queue behind each other while multiplying peak
-  // memory - on 16 GB that is how you get a swap storm instead of a speedup.
-  // With a reviewer it is two, so one scene is reviewed while the next is drawn;
-  // `onGpu` still keeps the draws themselves one at a time.
-  const limit = generatorUp ? (reviewerUp ? 2 : 1) : MAX_PARALLEL;
-  // Backdrop for the title card. Generated rather than borrowed from scene 1,
-  // which has a character standing in the middle of exactly where the title goes.
-  // No `character` is passed, so the adapter stays at zero and nobody appears.
-  //
-  // Queued FIRST, ahead of the scenes: it is also the cover on the profile grid,
-  // and queued last it reached the reviewer after the redraw budget was spent
-  // and shipped its first draw whatever the verdict.
-  let coverBackground = null;
-  let coverReview = null;
-  const coverJob = generatorUp && manifest.coverPrompt
-    ? [{
-      cover: true,
-      run: async () => {
-        const made = await drawReviewed(
-          { idx: 0, imagePrompt: manifest.coverPrompt, imageQuery: manifest.topic },
-          path.join(dir, 'cover_bg.jpg'), [], 'cover',
-        );
-        if (made) {
-          coverBackground = made.file;
-          coverReview = made.review ?? null;
-        }
-      },
-    }]
-    : [];
+  // The cover is the title card's backdrop and the cover on the profile grid, so
+  // it goes FIRST: queued last, it reached the reviewer after the budget was spent.
+  // Its stock results are filed under idx 0, the slot the spoken brand line rides.
+  const jobs = [
+    { cover: true, idx: 0, query: manifest.coverQuery || manifest.topic },
+    ...manifest.sentences.map((s) => ({ ...s, query: s.imageQuery || manifest.topic })),
+  ];
 
-  const jobs = [...coverJob, ...manifest.sentences];
-  const settled = (await mapWithLimit(jobs, limit, async (job) => {
-    if (job.cover) {
-      await job.run().catch(() => {});
-      return null;
-    }
+  const settled = await mapWithLimit(jobs, MAX_PARALLEL, async (job) => {
     try {
-      return await resolveScene(job);
+      return await resolveJob(job);
     } catch (err) {
-      return { idx: job.idx, query: job.imageQuery, missing: true, reason: err.message };
+      return { idx: job.idx, cover: job.cover || undefined, query: job.query, missing: true, reason: err.message };
     }
-  })).filter(Boolean);
+  });
 
-  const scenes = settled.filter((r) => !r.missing).sort((a, b) => a.idx - b.idx);
-  const missing = settled.filter((r) => r.missing).map(({ idx, query, reason }) => ({ idx, query, reason }));
+  const cover = settled.find((r) => r.cover);
+  const coverOk = cover && !cover.missing;
+  const rest = settled.filter((r) => !r.cover);
+  const scenes = rest.filter((r) => !r.missing).sort((a, b) => a.idx - b.idx);
+  const missing = rest.filter((r) => r.missing).map(({ idx, query, reason }) => ({ idx, query, reason }));
 
   process.stdout.write(JSON.stringify({
-    scenes, missing, coverBackground, coverReview,
-    generator: generatorUp ? 'up' : 'off',
+    scenes,
+    missing,
+    coverBackground: coverOk ? cover.file : null,
+    coverReview: coverOk
+      ? { ...cover.review, source: cover.source, id: cover.id, photographer: cover.photographer, link: cover.link }
+      : null,
     reviewer: reviewerUp ? 'up' : 'off',
+    passScore,
+    reviewCalls,
     imageSource: manifest.imageSource ?? 'auto',
+    // The workflow reports each of these to Unsplash; its API guidelines require it.
+    unsplashChosen: [...(coverOk ? [cover] : []), ...scenes]
+      .filter((r) => r.downloadLocation)
+      .map((r) => ({ idx: r.idx, downloadLocation: r.downloadLocation })),
   }));
 })().catch((err) => { console.error(err.message); process.exit(1); });
