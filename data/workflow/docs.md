@@ -237,6 +237,10 @@ tuỳ biến.
 
 ### Claude review ảnh cảnh ✅ (2026-10-05)
 
+> **Đã thay thế 2026-10-10:** không còn vẽ lại bằng SD. Reviewer giờ chấm điểm
+> 0–100 ảnh stock theo lô — xem "Ảnh stock + Claude chấm điểm" phía dưới. Phần
+> sau mô tả bản cũ.
+
 Mỗi ảnh SD vẽ ra được Claude (qua `claude -p` trên máy, `host/imagereview/server.js`,
 cổng `127.0.0.1:7861`) đối chiếu với câu thoại: câu nhắc **laptop**, **công ty** thì ảnh
 phải có laptop và văn phòng. Trượt → vẽ lại bằng prompt Claude viết lại (tối đa 3 lần
