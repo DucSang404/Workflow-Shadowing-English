@@ -65,7 +65,7 @@
 `container/cli/lib/pick_best.test.js`:
 
 ```js
-// Run on the host: node --test container/cli/lib/
+// Run on the host: node --test container/cli/lib/*.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { pickBest, candidateKey } = require('./pick_best');
@@ -116,7 +116,7 @@ test('candidateKey uses the id, and the url when there is none', () => {
 
 - [ ] **Step 2: Chạy test, xác nhận fail**
 
-Run: `node --test container/cli/lib/`
+Run: `node --test container/cli/lib/*.test.js`
 Expected: FAIL — `Cannot find module './pick_best'`.
 
 - [ ] **Step 3: Cài đặt**
@@ -164,7 +164,7 @@ module.exports = { pickBest, candidateKey };
 
 - [ ] **Step 4: Chạy test, xác nhận pass**
 
-Run: `node --test container/cli/lib/`
+Run: `node --test container/cli/lib/*.test.js`
 Expected: `# pass 8`, `# fail 0`.
 
 - [ ] **Step 5: Commit**
@@ -1943,7 +1943,7 @@ node host/imagereview/check.js      # kiểm thang điểm sau mỗi lần sửa
 #   reviewImages: true (mặc định) | false
 #   passScore: 72 (mặc định) — ảnh cao nhất ≥ ngưỡng được dùng; không đạt vẫn dùng, ghi FAIL
 
-node --test container/cli/lib/      # test logic chọn ảnh
+node --test container/cli/lib/*.test.js      # test logic chọn ảnh
 ```
 
 - [ ] **Step 3: `CLAUDE.md` — mục chạy tự động**
