@@ -624,6 +624,156 @@
       "topic": "asking a shop to hold an item for you",
       "addedAt": "2026-10-10",
       "source": "manual"
+    },
+    {
+      "topic": "asking a barista for a recommendation",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "ordering lunch at a food court",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying vegetables from a market seller",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a butcher for a cut of meat",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "ordering a pizza at a counter",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a baker what is fresh today",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying a bus ticket at a counter",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a ferry worker about the schedule",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a petrol station attendant to fill the tank",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a mechanic about a strange car noise",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "checking a patient in at a clinic desk",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "picking up a prescription at the pharmacy",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking an optician about new glasses",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "getting a vaccination at a clinic",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a nurse where to wait",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "trying on shoes at a shoe shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying a gift at a souvenir shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a shop assistant about a discount",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "paying for groceries at a supermarket checkout",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a bank teller to deposit a cheque",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a bank clerk about a transfer fee",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "viewing an apartment with an agent",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a locksmith to open your door",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "dropping off clothes at a dry cleaner",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a tailor to shorten trousers",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a coworker to share a printer",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "meeting a visitor at the office reception",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a teacher about a school trip",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a front desk clerk about breakfast hours",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "renting skis at a sports shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
     }
   ]
 }
