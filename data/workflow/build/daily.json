@@ -1,6 +1,7 @@
 {
   "name": "Daily Shadowing Video",
   "slug": "daily",
+  "webhookPath": "daily-dry-run",
   "nodes": [
     {
       "id": "dy-cron",
@@ -31,6 +32,23 @@
       }
     },
     {
+      "id": "dy-dryrun",
+      "name": "Dry Run Hook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -560,
+        200
+      ],
+      "webhookId": "c3e9a1d2-7f40-4b6e-9a18-5d2c0b7e4f61",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "daily-dry-run",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
       "id": "dy-topic",
       "name": "Pick Topic",
       "type": "n8n-nodes-base.code",
@@ -41,7 +59,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Chooses the topic for this run and the time its video should go out.\n//\n// Least recently used, not random: random repeats itself far sooner than people\n// expect, and a learning channel that posts the same situation twice in a week\n// looks abandoned. The pool cycles on its own and can be edited at any time\n// without touching this file.\nconst fs = require('fs');\nconst ROOT = '/data/workflow';\nconst FILE = `${ROOT}/topics.json`;\n\n// The slots a video can be scheduled into, in ICT. Two a day.\nconst POST_HOURS = [8, 20];\nconst ICT_OFFSET_HOURS = 7;\n\nconst cfg = JSON.parse(fs.readFileSync(FILE, 'utf8'));\nconst pool = (cfg.pool ?? []).filter((t) => typeof t === 'string' && t.trim());\nif (!pool.length) throw new Error('topics.json has an empty pool');\n\n// ---------------------------------------------------------------- topic ----\n// `history` is newest-first, so a SMALL index means recently used and a LARGE\n// index means long ago. Ranking by the index itself therefore picks the topic\n// used most recently - which, once every topic has run once, is whichever one\n// ran last, forever. Negating it puts the oldest first, which is the whole\n// point of the pool.\n//\n// Never-run topics outrank everything (nothing is less recent than never), and\n// they are picked from at random rather than in file order, so a freshly\n// appended batch does not go out as a visibly contiguous block.\nconst history = (cfg.history ?? []).map((h) => h.topic);\nconst rank = (t) => {\n  const i = history.indexOf(t);\n  return i === -1 ? -Infinity : -i;\n};\n\nconst best = pool.reduce((lowest, t) => Math.min(lowest, rank(t)), Infinity);\nconst candidates = pool.filter((t) => rank(t) === best);\nconst topic = candidates[Math.floor(Math.random() * candidates.length)];\n\n// ----------------------------------------------------------------- when ----\n// Aim at the next slot that has not already passed. The build runs about an\n// hour ahead of its slot, but a late or retried build must not hand Buffer a\n// time in the past, so the slot is chosen from the clock rather than from which\n// schedule trigger happened to fire.\nconst SAFETY_MS = 5 * 60_000;\nconst nowIct = new Date(Date.now() + ICT_OFFSET_HOURS * 3600_000);\n\nconst slotFor = (hour, dayOffset) => new Date(Date.UTC(\n  nowIct.getUTCFullYear(), nowIct.getUTCMonth(), nowIct.getUTCDate() + dayOffset,\n  hour - ICT_OFFSET_HOURS, 0, 0,\n));\n\nconst dueAt = [...POST_HOURS.map((h) => slotFor(h, 0)), slotFor(POST_HOURS[0], 1)]\n  .find((d) => d.getTime() >= Date.now() + SAFETY_MS);\n\nconst slotIct = new Date(dueAt.getTime() + ICT_OFFSET_HOURS * 3600_000);\nconst pad = (n) => String(n).padStart(2, '0');\n\nreturn [{\n  json: {\n    topic,\n    dueAt: dueAt.toISOString(),\n    postsAtIct: `${slotIct.getUTCFullYear()}-${pad(slotIct.getUTCMonth() + 1)}-${pad(slotIct.getUTCDate())}`\n      + ` ${pad(slotIct.getUTCHours())}:00 ICT`,\n    everRun: history.length,\n    poolSize: pool.length,\n    // How many topics are tied for \"least recently used\" right now. While this\n    // is large the pool is still being worked through for the first time.\n    freshCandidates: candidates.length,\n  },\n}];\n"
+        "jsCode": "// Topic bookkeeping for the daily workflow, as pure functions.\n//\n// Kept out of the Code nodes so the rules can be tested on the host with\n// `node --test`: which topic runs next, when the pool counts as used up, and what\n// Claude's suggestions must pass before they join the pool. The picker has been\n// wrong once already (it ranked by history position the wrong way round and would\n// have repeated the last topic forever), which is why this is tested at all.\n//\n// Code nodes cannot `require` project files, so host/workflows/daily.js prepends\n// everything above the exports marker at the bottom to each Code node that needs\n// it. Keep this file free of `require` and of top-level side effects.\n\nconst HISTORY_CAP = 200;\nconst REFILLS_CAP = 50;\nconst DEFAULT_THRESHOLD = 0.9;\nconst DEFAULT_BATCH = 30;\nconst MIN_WORDS = 3;\nconst MAX_WORDS = 12;\nconst ICT_OFFSET_MS = 7 * 3600_000;\n\nfunction emptyState() {\n  return { used: {}, history: [], refills: [] };\n}\n\n/** The comparison key for \"is this the same topic\": case, punctuation and spacing folded away. */\nfunction normalizeTopic(s) {\n  return String(s ?? '').toLowerCase().replace(/[^\\p{L}\\p{N}\\s]/gu, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/** pool.refill with anything missing or out of range replaced by the defaults. */\nfunction refillSettings(pool) {\n  const r = pool?.refill ?? {};\n  const threshold = Number(r.threshold);\n  const batch = Number(r.batch);\n  return {\n    threshold: threshold > 0 && threshold <= 1 ? threshold : DEFAULT_THRESHOLD,\n    batch: Number.isInteger(batch) && batch >= 1 && batch <= 100 ? batch : DEFAULT_BATCH,\n  };\n}\n\n/** The topic strings of pool.json, ignoring malformed entries rather than failing on them. */\nfunction poolTopics(pool) {\n  return (pool?.topics ?? [])\n    .map((t) => (typeof t?.topic === 'string' ? t.topic.trim() : ''))\n    .filter(Boolean);\n}\n\n/**\n * Least recently used, never-used first.\n *\n * Never-used topics are picked at random among themselves, so a freshly appended\n * batch does not go out as a visibly contiguous block. Once every topic has run,\n * the one with the oldest lastAt goes next; a tie keeps pool order.\n */\nfunction pickTopic(topics, used, random = Math.random) {\n  if (!topics.length) return { topic: null, fresh: 0 };\n  const fresh = topics.filter((t) => !used?.[t]);\n  if (fresh.length) return { topic: fresh[Math.floor(random() * fresh.length)], fresh: fresh.length };\n\n  const at = (t) => Date.parse(used[t]?.lastAt) || 0;\n  let best = topics[0];\n  for (const t of topics) if (at(t) < at(best)) best = t;\n  return { topic: best, fresh: 0 };\n}\n\n/**\n * Share of the pool that has run at least once. Topics in `used` that were since\n * deleted from the pool do not count. An empty pool counts as fully used, so it\n * asks for a refill rather than dividing by zero.\n */\nfunction usageRatio(topics, used) {\n  if (!topics.length) return 1;\n  return topics.filter((t) => used?.[t]).length / topics.length;\n}\n\n/** A new state with this run counted against its topic and logged, newest first. */\nfunction recordUse(state, entry) {\n  const prev = state.used?.[entry.topic] ?? { count: 0, lastAt: null };\n  return {\n    ...state,\n    used: { ...(state.used ?? {}), [entry.topic]: { count: prev.count + 1, lastAt: entry.at } },\n    history: [entry, ...(state.history ?? [])].slice(0, HISTORY_CAP),\n  };\n}\n\nfunction addRefill(state, refill) {\n  return { ...state, refills: [refill, ...(state.refills ?? [])].slice(0, REFILLS_CAP) };\n}\n\n/**\n * Claude's suggestions, filtered and appended to the pool.\n *\n * Claude is told the whole pool and asked not to repeat it, but the code does\n * not take that on trust: anything that normalises to an existing topic, repeats\n * an earlier suggestion, is not 3-12 words, or is not a string at all is\n * rejected. At most `batch` are added.\n */\nfunction mergeTopics(pool, candidates, { batch, today }) {\n  const seen = new Set(poolTopics(pool).map(normalizeTopic));\n  const added = [];\n  const rejected = [];\n\n  for (const c of Array.isArray(candidates) ? candidates : []) {\n    if (typeof c !== 'string') {\n      rejected.push(c);\n      continue;\n    }\n    const topic = c.trim().replace(/\\s+/g, ' ').toLowerCase();\n    const key = normalizeTopic(topic);\n    const words = key ? key.split(' ').length : 0;\n    if (words < MIN_WORDS || words > MAX_WORDS || seen.has(key) || added.length >= batch) {\n      rejected.push(c);\n      continue;\n    }\n    seen.add(key);\n    added.push(topic);\n  }\n\n  return {\n    pool: {\n      ...pool,\n      topics: [...(pool.topics ?? []), ...added.map((topic) => ({ topic, addedAt: today, source: 'claude' }))],\n    },\n    added,\n    rejected,\n  };\n}\n\n/** The calendar date in Asia/Ho_Chi_Minh, which is the date the channel lives in. */\nfunction todayIct(now = Date.now()) {\n  return new Date(now + ICT_OFFSET_MS).toISOString().slice(0, 10);\n}\n\n\n// ---- 01_pick_topic.js ----\n// Chooses the topic for this run and the time its video should go out.\n//\n// pickTopic, poolTopics and emptyState come from lib/topics.js, which\n// host/workflows/daily.js prepends to this node at deploy time.\n//\n// Least recently used, not random: random repeats itself far sooner than people\n// expect, and a learning channel that posts the same situation twice in a week\n// looks abandoned. topics/pool.json can be edited at any time without touching\n// this file; topics/state.json records what has run.\nconst fs = require('fs');\nconst POOL = '/data/workflow/topics/pool.json';\nconst STATE = '/data/workflow/topics/state.json';\n\n// The slots a video can be scheduled into, in ICT. Two a day.\nconst POST_HOURS = [8, 20];\nconst ICT_OFFSET_HOURS = 7;\n\nconst topics = poolTopics(JSON.parse(fs.readFileSync(POOL, 'utf8')));\nif (!topics.length) throw new Error('topics/pool.json has no topics');\n\nlet state = emptyState();\ntry {\n  state = JSON.parse(fs.readFileSync(STATE, 'utf8'));\n} catch (err) {\n  // Missing on a fresh checkout; unreadable means every topic looks unused for\n  // one cycle, which is a repeat, not a failure.\n  if (err.code !== 'ENOENT') console.log(`[daily] state.json unreadable, treating as empty - ${err.message}`);\n}\n\nconst { topic, fresh } = pickTopic(topics, state.used ?? {});\n\n// Only the dry-run webhook delivers a `body`; the schedule trigger does not. A\n// dry run builds and records but never reaches Buffer - see the Built? node.\nconst dryRun = $input.first().json.body !== undefined;\n\n// ----------------------------------------------------------------- when ----\n// Aim at the next slot that has not already passed. The build runs about an\n// hour ahead of its slot, but a late or retried build must not hand Buffer a\n// time in the past, so the slot is chosen from the clock rather than from which\n// schedule trigger happened to fire.\nconst SAFETY_MS = 5 * 60_000;\nconst nowIct = new Date(Date.now() + ICT_OFFSET_HOURS * 3600_000);\n\nconst slotFor = (hour, dayOffset) => new Date(Date.UTC(\n  nowIct.getUTCFullYear(), nowIct.getUTCMonth(), nowIct.getUTCDate() + dayOffset,\n  hour - ICT_OFFSET_HOURS, 0, 0,\n));\n\nconst dueAt = [...POST_HOURS.map((h) => slotFor(h, 0)), slotFor(POST_HOURS[0], 1)]\n  .find((d) => d.getTime() >= Date.now() + SAFETY_MS);\n\nconst slotIct = new Date(dueAt.getTime() + ICT_OFFSET_HOURS * 3600_000);\nconst pad = (n) => String(n).padStart(2, '0');\n\nreturn [{\n  json: {\n    topic,\n    dryRun,\n    dueAt: dueAt.toISOString(),\n    postsAtIct: `${slotIct.getUTCFullYear()}-${pad(slotIct.getUTCMonth() + 1)}-${pad(slotIct.getUTCDate())}`\n      + ` ${pad(slotIct.getUTCHours())}:00 ICT`,\n    poolSize: topics.length,\n    // How many topics have never run. While this is large the pool is still\n    // being worked through for the first time.\n    freshCandidates: fresh,\n  },\n}];\n"
       }
     },
     {
@@ -85,7 +103,7 @@
           "conditions": [
             {
               "id": "has-run",
-              "leftValue": "={{ $json.ok === true && !!$json.runId }}",
+              "leftValue": "={{ $json.ok === true && !!$json.runId && $('Pick Topic').first().json.dryRun !== true }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -132,12 +150,121 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Writes the day's result into topics.json and shapes a one-line summary.\n//\n// The history entry is what stops the picker repeating itself, so it is written\n// whether or not publishing succeeded - a topic whose video was built has been\n// spent either way, and repeating it tomorrow because Buffer was down would be\n// the wrong recovery.\nconst fs = require('fs');\nconst FILE = '/data/workflow/topics.json';\n\nconst picked = $('Pick Topic').first().json;\nconst built = $('Build Video').first().json;\nconst node = $input.first().json;\n\n// Both sub-calls are HTTP requests set to continue on error, so a failure shows\n// up as an `error` on the item rather than killing the schedule.\nconst published = node.error\n  ? { ok: false, error: String(node.error.message ?? node.error).slice(0, 300) }\n  : node;\n\nconst entry = {\n  topic: picked.topic,\n  runId: built?.runId ?? null,\n  at: new Date().toISOString(),\n  postsAt: picked.dueAt,\n  published: published.ok === true,\n  postId: published.postId ?? null,\n  error: published.ok === true ? null : (published.error ?? 'unknown'),\n};\n\ntry {\n  const cfg = JSON.parse(fs.readFileSync(FILE, 'utf8'));\n  // Newest first, and capped: the picker only cares about order, and an\n  // unbounded log would grow forever in a file that is read on every run.\n  cfg.history = [entry, ...(cfg.history ?? [])].slice(0, 200);\n  const tmp = `${FILE}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8');\n  fs.renameSync(tmp, FILE);\n} catch (err) {\n  console.log(`[daily] could not record history - ${err.message}`);\n}\n\nreturn [{\n  json: {\n    ok: entry.published,\n    topic: entry.topic,\n    runId: entry.runId,\n    video: built?.video ?? null,\n    postsAt: picked.postsAtIct,\n    postId: entry.postId,\n    error: entry.error,\n  },\n}];\n"
+        "jsCode": "// Topic bookkeeping for the daily workflow, as pure functions.\n//\n// Kept out of the Code nodes so the rules can be tested on the host with\n// `node --test`: which topic runs next, when the pool counts as used up, and what\n// Claude's suggestions must pass before they join the pool. The picker has been\n// wrong once already (it ranked by history position the wrong way round and would\n// have repeated the last topic forever), which is why this is tested at all.\n//\n// Code nodes cannot `require` project files, so host/workflows/daily.js prepends\n// everything above the exports marker at the bottom to each Code node that needs\n// it. Keep this file free of `require` and of top-level side effects.\n\nconst HISTORY_CAP = 200;\nconst REFILLS_CAP = 50;\nconst DEFAULT_THRESHOLD = 0.9;\nconst DEFAULT_BATCH = 30;\nconst MIN_WORDS = 3;\nconst MAX_WORDS = 12;\nconst ICT_OFFSET_MS = 7 * 3600_000;\n\nfunction emptyState() {\n  return { used: {}, history: [], refills: [] };\n}\n\n/** The comparison key for \"is this the same topic\": case, punctuation and spacing folded away. */\nfunction normalizeTopic(s) {\n  return String(s ?? '').toLowerCase().replace(/[^\\p{L}\\p{N}\\s]/gu, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/** pool.refill with anything missing or out of range replaced by the defaults. */\nfunction refillSettings(pool) {\n  const r = pool?.refill ?? {};\n  const threshold = Number(r.threshold);\n  const batch = Number(r.batch);\n  return {\n    threshold: threshold > 0 && threshold <= 1 ? threshold : DEFAULT_THRESHOLD,\n    batch: Number.isInteger(batch) && batch >= 1 && batch <= 100 ? batch : DEFAULT_BATCH,\n  };\n}\n\n/** The topic strings of pool.json, ignoring malformed entries rather than failing on them. */\nfunction poolTopics(pool) {\n  return (pool?.topics ?? [])\n    .map((t) => (typeof t?.topic === 'string' ? t.topic.trim() : ''))\n    .filter(Boolean);\n}\n\n/**\n * Least recently used, never-used first.\n *\n * Never-used topics are picked at random among themselves, so a freshly appended\n * batch does not go out as a visibly contiguous block. Once every topic has run,\n * the one with the oldest lastAt goes next; a tie keeps pool order.\n */\nfunction pickTopic(topics, used, random = Math.random) {\n  if (!topics.length) return { topic: null, fresh: 0 };\n  const fresh = topics.filter((t) => !used?.[t]);\n  if (fresh.length) return { topic: fresh[Math.floor(random() * fresh.length)], fresh: fresh.length };\n\n  const at = (t) => Date.parse(used[t]?.lastAt) || 0;\n  let best = topics[0];\n  for (const t of topics) if (at(t) < at(best)) best = t;\n  return { topic: best, fresh: 0 };\n}\n\n/**\n * Share of the pool that has run at least once. Topics in `used` that were since\n * deleted from the pool do not count. An empty pool counts as fully used, so it\n * asks for a refill rather than dividing by zero.\n */\nfunction usageRatio(topics, used) {\n  if (!topics.length) return 1;\n  return topics.filter((t) => used?.[t]).length / topics.length;\n}\n\n/** A new state with this run counted against its topic and logged, newest first. */\nfunction recordUse(state, entry) {\n  const prev = state.used?.[entry.topic] ?? { count: 0, lastAt: null };\n  return {\n    ...state,\n    used: { ...(state.used ?? {}), [entry.topic]: { count: prev.count + 1, lastAt: entry.at } },\n    history: [entry, ...(state.history ?? [])].slice(0, HISTORY_CAP),\n  };\n}\n\nfunction addRefill(state, refill) {\n  return { ...state, refills: [refill, ...(state.refills ?? [])].slice(0, REFILLS_CAP) };\n}\n\n/**\n * Claude's suggestions, filtered and appended to the pool.\n *\n * Claude is told the whole pool and asked not to repeat it, but the code does\n * not take that on trust: anything that normalises to an existing topic, repeats\n * an earlier suggestion, is not 3-12 words, or is not a string at all is\n * rejected. At most `batch` are added.\n */\nfunction mergeTopics(pool, candidates, { batch, today }) {\n  const seen = new Set(poolTopics(pool).map(normalizeTopic));\n  const added = [];\n  const rejected = [];\n\n  for (const c of Array.isArray(candidates) ? candidates : []) {\n    if (typeof c !== 'string') {\n      rejected.push(c);\n      continue;\n    }\n    const topic = c.trim().replace(/\\s+/g, ' ').toLowerCase();\n    const key = normalizeTopic(topic);\n    const words = key ? key.split(' ').length : 0;\n    if (words < MIN_WORDS || words > MAX_WORDS || seen.has(key) || added.length >= batch) {\n      rejected.push(c);\n      continue;\n    }\n    seen.add(key);\n    added.push(topic);\n  }\n\n  return {\n    pool: {\n      ...pool,\n      topics: [...(pool.topics ?? []), ...added.map((topic) => ({ topic, addedAt: today, source: 'claude' }))],\n    },\n    added,\n    rejected,\n  };\n}\n\n/** The calendar date in Asia/Ho_Chi_Minh, which is the date the channel lives in. */\nfunction todayIct(now = Date.now()) {\n  return new Date(now + ICT_OFFSET_MS).toISOString().slice(0, 10);\n}\n\n\n// ---- 02_record_run.js ----\n// Writes this run into topics/state.json and shapes a one-line summary.\n//\n// recordUse and emptyState come from lib/topics.js, prepended at deploy time.\n//\n// The run counts against its topic whether or not publishing succeeded - a topic\n// whose video was built has been spent either way, and repeating it tomorrow\n// because Buffer was down would be the wrong recovery. A dry run counts too: its\n// video was built.\nconst fs = require('fs');\nconst STATE = '/data/workflow/topics/state.json';\n\nconst picked = $('Pick Topic').first().json;\nconst built = $('Build Video').first().json;\nconst node = $input.first().json;\n\n// Both sub-calls are HTTP requests set to continue on error, so a failure shows\n// up as an `error` on the item rather than killing the schedule. A dry run never\n// called Buffer, so whatever arrived here is the build, not a publish result.\nlet published;\nif (picked.dryRun) published = { ok: false, error: 'dry run' };\nelse if (node.error) published = { ok: false, error: String(node.error.message ?? node.error).slice(0, 300) };\nelse published = node;\n\nconst entry = {\n  topic: picked.topic,\n  runId: built?.runId ?? null,\n  at: new Date().toISOString(),\n  postsAt: picked.dueAt,\n  published: published.ok === true,\n  postId: published.postId ?? null,\n  error: published.ok === true ? null : (published.error ?? 'unknown'),\n  dryRun: picked.dryRun === true,\n};\n\ntry {\n  let state = emptyState();\n  try {\n    state = JSON.parse(fs.readFileSync(STATE, 'utf8'));\n  } catch (err) {\n    if (err.code !== 'ENOENT') console.log(`[daily] state.json unreadable, starting it again - ${err.message}`);\n  }\n  const tmp = `${STATE}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(recordUse(state, entry), null, 2), 'utf8');\n  fs.renameSync(tmp, STATE);\n} catch (err) {\n  console.log(`[daily] could not record the run - ${err.message}`);\n}\n\nreturn [{\n  json: {\n    ok: entry.published,\n    dryRun: entry.dryRun,\n    topic: entry.topic,\n    runId: entry.runId,\n    video: built?.video ?? null,\n    postsAt: picked.postsAtIct,\n    postId: entry.postId,\n    error: entry.error,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "dy-prune",
+      "name": "Prune Output",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "executeOnce": true,
+        "command": "node /data/workflow/container/cli/prune_output.js /data/workflow/output 10"
+      }
+    },
+    {
+      "id": "dy-check-topics",
+      "name": "Check Topics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Topic bookkeeping for the daily workflow, as pure functions.\n//\n// Kept out of the Code nodes so the rules can be tested on the host with\n// `node --test`: which topic runs next, when the pool counts as used up, and what\n// Claude's suggestions must pass before they join the pool. The picker has been\n// wrong once already (it ranked by history position the wrong way round and would\n// have repeated the last topic forever), which is why this is tested at all.\n//\n// Code nodes cannot `require` project files, so host/workflows/daily.js prepends\n// everything above the exports marker at the bottom to each Code node that needs\n// it. Keep this file free of `require` and of top-level side effects.\n\nconst HISTORY_CAP = 200;\nconst REFILLS_CAP = 50;\nconst DEFAULT_THRESHOLD = 0.9;\nconst DEFAULT_BATCH = 30;\nconst MIN_WORDS = 3;\nconst MAX_WORDS = 12;\nconst ICT_OFFSET_MS = 7 * 3600_000;\n\nfunction emptyState() {\n  return { used: {}, history: [], refills: [] };\n}\n\n/** The comparison key for \"is this the same topic\": case, punctuation and spacing folded away. */\nfunction normalizeTopic(s) {\n  return String(s ?? '').toLowerCase().replace(/[^\\p{L}\\p{N}\\s]/gu, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/** pool.refill with anything missing or out of range replaced by the defaults. */\nfunction refillSettings(pool) {\n  const r = pool?.refill ?? {};\n  const threshold = Number(r.threshold);\n  const batch = Number(r.batch);\n  return {\n    threshold: threshold > 0 && threshold <= 1 ? threshold : DEFAULT_THRESHOLD,\n    batch: Number.isInteger(batch) && batch >= 1 && batch <= 100 ? batch : DEFAULT_BATCH,\n  };\n}\n\n/** The topic strings of pool.json, ignoring malformed entries rather than failing on them. */\nfunction poolTopics(pool) {\n  return (pool?.topics ?? [])\n    .map((t) => (typeof t?.topic === 'string' ? t.topic.trim() : ''))\n    .filter(Boolean);\n}\n\n/**\n * Least recently used, never-used first.\n *\n * Never-used topics are picked at random among themselves, so a freshly appended\n * batch does not go out as a visibly contiguous block. Once every topic has run,\n * the one with the oldest lastAt goes next; a tie keeps pool order.\n */\nfunction pickTopic(topics, used, random = Math.random) {\n  if (!topics.length) return { topic: null, fresh: 0 };\n  const fresh = topics.filter((t) => !used?.[t]);\n  if (fresh.length) return { topic: fresh[Math.floor(random() * fresh.length)], fresh: fresh.length };\n\n  const at = (t) => Date.parse(used[t]?.lastAt) || 0;\n  let best = topics[0];\n  for (const t of topics) if (at(t) < at(best)) best = t;\n  return { topic: best, fresh: 0 };\n}\n\n/**\n * Share of the pool that has run at least once. Topics in `used` that were since\n * deleted from the pool do not count. An empty pool counts as fully used, so it\n * asks for a refill rather than dividing by zero.\n */\nfunction usageRatio(topics, used) {\n  if (!topics.length) return 1;\n  return topics.filter((t) => used?.[t]).length / topics.length;\n}\n\n/** A new state with this run counted against its topic and logged, newest first. */\nfunction recordUse(state, entry) {\n  const prev = state.used?.[entry.topic] ?? { count: 0, lastAt: null };\n  return {\n    ...state,\n    used: { ...(state.used ?? {}), [entry.topic]: { count: prev.count + 1, lastAt: entry.at } },\n    history: [entry, ...(state.history ?? [])].slice(0, HISTORY_CAP),\n  };\n}\n\nfunction addRefill(state, refill) {\n  return { ...state, refills: [refill, ...(state.refills ?? [])].slice(0, REFILLS_CAP) };\n}\n\n/**\n * Claude's suggestions, filtered and appended to the pool.\n *\n * Claude is told the whole pool and asked not to repeat it, but the code does\n * not take that on trust: anything that normalises to an existing topic, repeats\n * an earlier suggestion, is not 3-12 words, or is not a string at all is\n * rejected. At most `batch` are added.\n */\nfunction mergeTopics(pool, candidates, { batch, today }) {\n  const seen = new Set(poolTopics(pool).map(normalizeTopic));\n  const added = [];\n  const rejected = [];\n\n  for (const c of Array.isArray(candidates) ? candidates : []) {\n    if (typeof c !== 'string') {\n      rejected.push(c);\n      continue;\n    }\n    const topic = c.trim().replace(/\\s+/g, ' ').toLowerCase();\n    const key = normalizeTopic(topic);\n    const words = key ? key.split(' ').length : 0;\n    if (words < MIN_WORDS || words > MAX_WORDS || seen.has(key) || added.length >= batch) {\n      rejected.push(c);\n      continue;\n    }\n    seen.add(key);\n    added.push(topic);\n  }\n\n  return {\n    pool: {\n      ...pool,\n      topics: [...(pool.topics ?? []), ...added.map((topic) => ({ topic, addedAt: today, source: 'claude' }))],\n    },\n    added,\n    rejected,\n  };\n}\n\n/** The calendar date in Asia/Ho_Chi_Minh, which is the date the channel lives in. */\nfunction todayIct(now = Date.now()) {\n  return new Date(now + ICT_OFFSET_MS).toISOString().slice(0, 10);\n}\n\n\n// ---- 03_check_topics.js ----\n// Decides whether the pool is running low enough to ask Claude for more.\n//\n// poolTopics, refillSettings, usageRatio and emptyState come from lib/topics.js,\n// prepended at deploy time.\n//\n// \"Low\" is the share of pool topics that have run at least once, against\n// pool.json's refill.threshold (0.9 by default). Refilling before the pool is\n// used up means the channel never has to repeat a topic.\nconst fs = require('fs');\nconst POOL = '/data/workflow/topics/pool.json';\nconst STATE = '/data/workflow/topics/state.json';\nconst RECENT = 30;\n\nconst pool = JSON.parse(fs.readFileSync(POOL, 'utf8'));\nlet state = emptyState();\ntry {\n  state = JSON.parse(fs.readFileSync(STATE, 'utf8'));\n} catch {\n  state = emptyState();\n}\n\nconst topics = poolTopics(pool);\nconst { threshold, batch } = refillSettings(pool);\nconst ratio = usageRatio(topics, state.used ?? {});\nconst recent = [...new Set((state.history ?? []).map((h) => h.topic).filter(Boolean))].slice(0, RECENT);\n\nreturn [{\n  json: {\n    need: ratio >= threshold,\n    ratio: Math.round(ratio * 1000) / 1000,\n    threshold,\n    batch,\n    poolSize: topics.length,\n    existing: topics,\n    recent,\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "dy-topics-low",
+      "name": "Topics Low?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "need-refill",
+              "leftValue": "={{ $json.need === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "dy-refill",
+      "name": "Refill Topics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1330,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7861/topics",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ existing: $json.existing, recent: $json.recent, count: $json.batch }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      }
+    },
+    {
+      "id": "dy-merge-topics",
+      "name": "Merge Topics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Topic bookkeeping for the daily workflow, as pure functions.\n//\n// Kept out of the Code nodes so the rules can be tested on the host with\n// `node --test`: which topic runs next, when the pool counts as used up, and what\n// Claude's suggestions must pass before they join the pool. The picker has been\n// wrong once already (it ranked by history position the wrong way round and would\n// have repeated the last topic forever), which is why this is tested at all.\n//\n// Code nodes cannot `require` project files, so host/workflows/daily.js prepends\n// everything above the exports marker at the bottom to each Code node that needs\n// it. Keep this file free of `require` and of top-level side effects.\n\nconst HISTORY_CAP = 200;\nconst REFILLS_CAP = 50;\nconst DEFAULT_THRESHOLD = 0.9;\nconst DEFAULT_BATCH = 30;\nconst MIN_WORDS = 3;\nconst MAX_WORDS = 12;\nconst ICT_OFFSET_MS = 7 * 3600_000;\n\nfunction emptyState() {\n  return { used: {}, history: [], refills: [] };\n}\n\n/** The comparison key for \"is this the same topic\": case, punctuation and spacing folded away. */\nfunction normalizeTopic(s) {\n  return String(s ?? '').toLowerCase().replace(/[^\\p{L}\\p{N}\\s]/gu, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/** pool.refill with anything missing or out of range replaced by the defaults. */\nfunction refillSettings(pool) {\n  const r = pool?.refill ?? {};\n  const threshold = Number(r.threshold);\n  const batch = Number(r.batch);\n  return {\n    threshold: threshold > 0 && threshold <= 1 ? threshold : DEFAULT_THRESHOLD,\n    batch: Number.isInteger(batch) && batch >= 1 && batch <= 100 ? batch : DEFAULT_BATCH,\n  };\n}\n\n/** The topic strings of pool.json, ignoring malformed entries rather than failing on them. */\nfunction poolTopics(pool) {\n  return (pool?.topics ?? [])\n    .map((t) => (typeof t?.topic === 'string' ? t.topic.trim() : ''))\n    .filter(Boolean);\n}\n\n/**\n * Least recently used, never-used first.\n *\n * Never-used topics are picked at random among themselves, so a freshly appended\n * batch does not go out as a visibly contiguous block. Once every topic has run,\n * the one with the oldest lastAt goes next; a tie keeps pool order.\n */\nfunction pickTopic(topics, used, random = Math.random) {\n  if (!topics.length) return { topic: null, fresh: 0 };\n  const fresh = topics.filter((t) => !used?.[t]);\n  if (fresh.length) return { topic: fresh[Math.floor(random() * fresh.length)], fresh: fresh.length };\n\n  const at = (t) => Date.parse(used[t]?.lastAt) || 0;\n  let best = topics[0];\n  for (const t of topics) if (at(t) < at(best)) best = t;\n  return { topic: best, fresh: 0 };\n}\n\n/**\n * Share of the pool that has run at least once. Topics in `used` that were since\n * deleted from the pool do not count. An empty pool counts as fully used, so it\n * asks for a refill rather than dividing by zero.\n */\nfunction usageRatio(topics, used) {\n  if (!topics.length) return 1;\n  return topics.filter((t) => used?.[t]).length / topics.length;\n}\n\n/** A new state with this run counted against its topic and logged, newest first. */\nfunction recordUse(state, entry) {\n  const prev = state.used?.[entry.topic] ?? { count: 0, lastAt: null };\n  return {\n    ...state,\n    used: { ...(state.used ?? {}), [entry.topic]: { count: prev.count + 1, lastAt: entry.at } },\n    history: [entry, ...(state.history ?? [])].slice(0, HISTORY_CAP),\n  };\n}\n\nfunction addRefill(state, refill) {\n  return { ...state, refills: [refill, ...(state.refills ?? [])].slice(0, REFILLS_CAP) };\n}\n\n/**\n * Claude's suggestions, filtered and appended to the pool.\n *\n * Claude is told the whole pool and asked not to repeat it, but the code does\n * not take that on trust: anything that normalises to an existing topic, repeats\n * an earlier suggestion, is not 3-12 words, or is not a string at all is\n * rejected. At most `batch` are added.\n */\nfunction mergeTopics(pool, candidates, { batch, today }) {\n  const seen = new Set(poolTopics(pool).map(normalizeTopic));\n  const added = [];\n  const rejected = [];\n\n  for (const c of Array.isArray(candidates) ? candidates : []) {\n    if (typeof c !== 'string') {\n      rejected.push(c);\n      continue;\n    }\n    const topic = c.trim().replace(/\\s+/g, ' ').toLowerCase();\n    const key = normalizeTopic(topic);\n    const words = key ? key.split(' ').length : 0;\n    if (words < MIN_WORDS || words > MAX_WORDS || seen.has(key) || added.length >= batch) {\n      rejected.push(c);\n      continue;\n    }\n    seen.add(key);\n    added.push(topic);\n  }\n\n  return {\n    pool: {\n      ...pool,\n      topics: [...(pool.topics ?? []), ...added.map((topic) => ({ topic, addedAt: today, source: 'claude' }))],\n    },\n    added,\n    rejected,\n  };\n}\n\n/** The calendar date in Asia/Ho_Chi_Minh, which is the date the channel lives in. */\nfunction todayIct(now = Date.now()) {\n  return new Date(now + ICT_OFFSET_MS).toISOString().slice(0, 10);\n}\n\n\n// ---- 04_merge_topics.js ----\n// Adds Claude's suggested topics to topics/pool.json and logs the attempt.\n//\n// mergeTopics, addRefill, todayIct and emptyState come from lib/topics.js,\n// prepended at deploy time.\n//\n// The HTTP node before this continues on error, so a reviewer that is down or\n// slow arrives here as `{error}`. Then the pool is left alone and the failure is\n// logged in state.refills; the next run still finds the pool low and asks again.\nconst fs = require('fs');\nconst POOL = '/data/workflow/topics/pool.json';\nconst STATE = '/data/workflow/topics/state.json';\n\nconst check = $('Check Topics').first().json;\nconst res = $input.first().json;\n\nconst writeJson = (file, data) => {\n  const tmp = `${file}.tmp`;\n  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\\n`, 'utf8');\n  fs.renameSync(tmp, file);\n};\n\n// Read again rather than trusting Check Topics' copy: someone may have edited\n// the pool while Claude was thinking.\nconst pool = JSON.parse(fs.readFileSync(POOL, 'utf8'));\nconst before = (pool.topics ?? []).length;\n\nlet refill;\nlet added = [];\nif (res.error || !Array.isArray(res.topics)) {\n  const why = res.error?.message ?? res.error ?? 'no topics in the response';\n  refill = { at: new Date().toISOString(), before, added: 0, rejected: 0, error: String(why).slice(0, 300) };\n} else {\n  const merged = mergeTopics(pool, res.topics, { batch: check.batch, today: todayIct() });\n  if (merged.added.length) writeJson(POOL, merged.pool);\n  added = merged.added;\n  refill = { at: new Date().toISOString(), before, added: added.length, rejected: merged.rejected.length, error: null };\n}\n\ntry {\n  let state = emptyState();\n  try {\n    state = JSON.parse(fs.readFileSync(STATE, 'utf8'));\n  } catch {\n    state = emptyState();\n  }\n  writeJson(STATE, addRefill(state, refill));\n} catch (err) {\n  console.log(`[daily] could not log the refill - ${err.message}`);\n}\n\nreturn [{ json: { ...refill, ratioBefore: check.ratio, addedTopics: added } }];\n"
       }
     }
   ],
   "connections": {
     "Twice Daily": {
+      "main": [
+        [
+          {
+            "node": "Pick Topic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dry Run Hook": {
       "main": [
         [
           {
@@ -193,6 +320,62 @@
         [
           {
             "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Run": {
+      "main": [
+        [
+          {
+            "node": "Prune Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prune Output": {
+      "main": [
+        [
+          {
+            "node": "Check Topics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Topics": {
+      "main": [
+        [
+          {
+            "node": "Topics Low?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Topics Low?": {
+      "main": [
+        [
+          {
+            "node": "Refill Topics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Refill Topics": {
+      "main": [
+        [
+          {
+            "node": "Merge Topics",
             "type": "main",
             "index": 0
           }

@@ -1,40 +1,37 @@
 // Chooses the topic for this run and the time its video should go out.
 //
+// pickTopic, poolTopics and emptyState come from lib/topics.js, which
+// host/workflows/daily.js prepends to this node at deploy time.
+//
 // Least recently used, not random: random repeats itself far sooner than people
 // expect, and a learning channel that posts the same situation twice in a week
-// looks abandoned. The pool cycles on its own and can be edited at any time
-// without touching this file.
+// looks abandoned. topics/pool.json can be edited at any time without touching
+// this file; topics/state.json records what has run.
 const fs = require('fs');
-const ROOT = '/data/workflow';
-const FILE = `${ROOT}/topics.json`;
+const POOL = '/data/workflow/topics/pool.json';
+const STATE = '/data/workflow/topics/state.json';
 
 // The slots a video can be scheduled into, in ICT. Two a day.
 const POST_HOURS = [8, 20];
 const ICT_OFFSET_HOURS = 7;
 
-const cfg = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-const pool = (cfg.pool ?? []).filter((t) => typeof t === 'string' && t.trim());
-if (!pool.length) throw new Error('topics.json has an empty pool');
+const topics = poolTopics(JSON.parse(fs.readFileSync(POOL, 'utf8')));
+if (!topics.length) throw new Error('topics/pool.json has no topics');
 
-// ---------------------------------------------------------------- topic ----
-// `history` is newest-first, so a SMALL index means recently used and a LARGE
-// index means long ago. Ranking by the index itself therefore picks the topic
-// used most recently - which, once every topic has run once, is whichever one
-// ran last, forever. Negating it puts the oldest first, which is the whole
-// point of the pool.
-//
-// Never-run topics outrank everything (nothing is less recent than never), and
-// they are picked from at random rather than in file order, so a freshly
-// appended batch does not go out as a visibly contiguous block.
-const history = (cfg.history ?? []).map((h) => h.topic);
-const rank = (t) => {
-  const i = history.indexOf(t);
-  return i === -1 ? -Infinity : -i;
-};
+let state = emptyState();
+try {
+  state = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+} catch (err) {
+  // Missing on a fresh checkout; unreadable means every topic looks unused for
+  // one cycle, which is a repeat, not a failure.
+  if (err.code !== 'ENOENT') console.log(`[daily] state.json unreadable, treating as empty - ${err.message}`);
+}
 
-const best = pool.reduce((lowest, t) => Math.min(lowest, rank(t)), Infinity);
-const candidates = pool.filter((t) => rank(t) === best);
-const topic = candidates[Math.floor(Math.random() * candidates.length)];
+const { topic, fresh } = pickTopic(topics, state.used ?? {});
+
+// Only the dry-run webhook delivers a `body`; the schedule trigger does not. A
+// dry run builds and records but never reaches Buffer - see the Built? node.
+const dryRun = $input.first().json.body !== undefined;
 
 // ----------------------------------------------------------------- when ----
 // Aim at the next slot that has not already passed. The build runs about an
@@ -58,13 +55,13 @@ const pad = (n) => String(n).padStart(2, '0');
 return [{
   json: {
     topic,
+    dryRun,
     dueAt: dueAt.toISOString(),
     postsAtIct: `${slotIct.getUTCFullYear()}-${pad(slotIct.getUTCMonth() + 1)}-${pad(slotIct.getUTCDate())}`
       + ` ${pad(slotIct.getUTCHours())}:00 ICT`,
-    everRun: history.length,
-    poolSize: pool.length,
-    // How many topics are tied for "least recently used" right now. While this
-    // is large the pool is still being worked through for the first time.
-    freshCandidates: candidates.length,
+    poolSize: topics.length,
+    // How many topics have never run. While this is large the pool is still
+    // being worked through for the first time.
+    freshCandidates: fresh,
   },
 }];
