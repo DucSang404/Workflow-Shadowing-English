@@ -126,6 +126,12 @@ lại `node host/deploy.js`. Ước lượng: 5 phút, nhưng cần vài run đ�
 
 ### 13. ~~Chất lượng ảnh sụt mạnh tuỳ chủ đề~~ ✅ ĐÃ CHỮA bằng SD 1.5 local (2026-10-04)
 
+> **Cập nhật 2026-10-10:** bỏ SD, quay về ảnh stock nhưng có **Claude chấm điểm**
+> (Unsplash + Pexels + Openverse, lô 4 ảnh, ngưỡng 72). Vấn đề gốc của #13 — ảnh
+> stock lệch câu — giờ được bắt bằng điểm thay vì bằng máy vẽ; cảnh không đạt
+> vẫn dùng ảnh tốt nhất và ghi `pass:false` trong record. Xem CLAUDE.md, "Claude
+> chấm ảnh stock".
+
 Chạy lại đúng chủ đề tệ nhất — standup với team dev, trước đây **2/8** ảnh đúng —
 bằng model sinh ảnh local: **6/6 đúng chủ đề**, ~7.2s mỗi ảnh.
 
@@ -255,6 +261,13 @@ webhook trả tóm tắt ở `scenes.passed / failed / redraws`.
 
 ⚠ Phải chạy reviewer như LaunchAgent (xem `CLAUDE.md`) thì lịch 07:00/19:00 mới có review.
 Mỗi video tốn khoảng 10-20 lần gọi `claude -p` vào hạn mức gói Claude.
+
+### Ảnh stock + Claude chấm điểm ✅ (2026-10-10)
+
+Thay SD bằng ảnh Unsplash/Pexels/Openverse. Claude chấm 0–100 theo lô 4, dùng ảnh
+cao nhất ≥ 72, không đạt thì vẫn dùng ảnh cao nhất và ghi FAIL. Không ảnh nào lặp
+trong một video. Ảnh bìa tìm bằng `coverQuery` qua slot `idx 0`. Spec:
+`docs/superpowers/specs/2026-10-10-stock-images-claude-review-design.md`.
 
 ### Trang kết cuối video ✅ (2026-10-05)
 
