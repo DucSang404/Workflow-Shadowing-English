@@ -79,7 +79,7 @@ const TTS_BODY = `={{ JSON.stringify({
 /** Node order is the execution order; connections are derived from it. */
 const CHAIN = ['Webhook', 'Prepare Run', 'Generate Dialogue', 'Parse & Normalize',
   'Synthesize Speech', 'Keep Successful Audio', 'Write Sentence Audio',
-  'Search Unsplash', 'Search Pexels', 'Collect Stock', 'Fetch Scenes', 'Fetch Music',
+  'Search Unsplash', 'Collect Stock', 'Fetch Scenes', 'Fetch Music',
   'Probe Durations', 'Build SRT', 'Assemble Video', 'Build Response', 'Respond to Webhook'];
 
 function linearConnections(chain) {
@@ -213,8 +213,8 @@ function definition({ credentials }) {
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.5,
       position: at('Search Unsplash'),
-      // Optional like Pexels: with no key, a bad key or the demo tier's 50/hour
-      // spent, this passes the error through and the scene leans on the others.
+      // Optional by design: with no key, a bad key or the demo tier's 50/hour
+      // spent, this passes the error through and every scene leans on Openverse.
       onError: 'continueRegularOutput',
       retryOnFail: true,
       maxTries: 2,
@@ -229,7 +229,9 @@ function definition({ credentials }) {
         queryParameters: {
           parameters: [
             { name: 'query', value: "={{ $('Parse & Normalize').item.json.imageQuery }}" },
-            { name: 'per_page', value: '6' },
+            // Ten, so both review batches can come from Unsplash before the
+            // slower Openverse search is needed. Still one request per scene.
+            { name: 'per_page', value: '10' },
             { name: 'orientation', value: 'landscape' },
             { name: 'content_filter', value: 'high' },
           ],
@@ -240,36 +242,6 @@ function definition({ credentials }) {
         options: { timeout: 20000 },
       },
       credentials: { httpHeaderAuth: credentials.unsplash },
-    },
-    {
-      id: 'n-pexels',
-      name: 'Search Pexels',
-      type: 'n8n-nodes-base.httpRequest',
-      typeVersion: 4.5,
-      position: at('Search Pexels'),
-      // Optional by design: with no key, a bad key or an exhausted quota this
-      // passes the error through and the scene leans on Unsplash and Openverse.
-      onError: 'continueRegularOutput',
-      retryOnFail: true,
-      maxTries: 2,
-      waitBetweenTries: 1000,
-      parameters: {
-        method: 'GET',
-        url: 'https://api.pexels.com/v1/search',
-        authentication: 'genericCredentialType',
-        genericAuthType: 'httpHeaderAuth',
-        sendQuery: true,
-        specifyQuery: 'keypair',
-        queryParameters: {
-          parameters: [
-            { name: 'query', value: "={{ $('Parse & Normalize').item.json.imageQuery }}" },
-            { name: 'per_page', value: '6' },
-            { name: 'orientation', value: 'landscape' },
-          ],
-        },
-        options: { timeout: 20000 },
-      },
-      credentials: { httpHeaderAuth: credentials.pexels },
     },
     {
       id: 'n-stock-collect',

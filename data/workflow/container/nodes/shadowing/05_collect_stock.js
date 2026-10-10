@@ -1,13 +1,17 @@
-// Collects the Unsplash and Pexels search results into stock.json, which
-// fetch_scenes.js reads as each scene's candidate list.
+// Collects the Unsplash search results into stock.json, which fetch_scenes.js
+// reads as each scene's candidate list.
 //
-// The indirection exists so the API keys stay in the n8n credential store: the
-// HTTP nodes hold the credentials, this node only ever sees what they returned,
-// and the CLI script never touches a key at all.
+// The indirection exists so the API key stays in the n8n credential store: the
+// HTTP node holds the credential, this node only ever sees what it returned, and
+// the CLI script never touches a key at all.
 //
-// Both searches are optional. With no key, a bad key or an exhausted quota a
-// search node passes its error through instead of failing, that library is just
-// absent here, and fetch_scenes.js falls back to Openverse.
+// The search is optional. With no key, a bad key or an exhausted quota the
+// search node passes its error through instead of failing, the scene simply has
+// no stock list here, and fetch_scenes.js falls back to Openverse.
+//
+// Pexels used to be searched alongside. Removed 2026-10-10: the key was never
+// valid, every run spent 14 requests on 401s, and Pexels had stopped issuing new
+// keys. Unsplash alone passed 5 of 6 scenes on the first run.
 //
 // Item 0 is the title card's slot: its query is the manifest's coverQuery.
 const fs = require('fs');
@@ -29,35 +33,12 @@ function fromUnsplash(json) {
   }));
 }
 
-function fromPexels(json) {
-  return (json?.photos ?? []).filter((p) => p?.src?.large2x || p?.src?.large).map((p) => ({
-    source: 'pexels',
-    id: String(p.id),
-    // large2x is ~1880px wide: plenty for a 1920 frame, far smaller than original.
-    url: p.src.large2x ?? p.src.large,
-    photographer: p.photographer ?? null,
-    link: p.url ?? null,
-  }));
-}
-
-/** u1, p1, u2, p2 ... so the first batch Claude sees has both libraries in it. */
-function interleave(a, b) {
-  const out = [];
-  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
-    if (a[i]) out.push(a[i]);
-    if (b[i]) out.push(b[i]);
-  }
-  return out;
-}
-
-const pexels = $input.all();
-const unsplash = $('Search Unsplash').all();
+const unsplash = $input.all();
 const byIdx = {};
 let unsplashHits = 0;
-let pexelsHits = 0;
 let failed = 0;
 
-for (let i = 0; i < pexels.length; i += 1) {
+for (let i = 0; i < unsplash.length; i += 1) {
   // The paired item, not .all()[i]: Keep Successful Audio drops sentences whose
   // TTS failed, so positions here do not line up with Parse & Normalize's.
   let idx;
@@ -69,23 +50,20 @@ for (let i = 0; i < pexels.length; i += 1) {
   if (idx === undefined || idx === null) continue;
 
   const u = unsplash[i]?.json ?? {};
-  const p = pexels[i]?.json ?? {};
-  if (u.error) failed += 1;
-  if (p.error) failed += 1;
-
-  const fromU = u.error ? [] : fromUnsplash(u);
-  const fromP = p.error ? [] : fromPexels(p);
-  unsplashHits += fromU.length;
-  pexelsHits += fromP.length;
-  byIdx[idx] = interleave(fromU, fromP);
+  if (u.error) {
+    failed += 1;
+    continue;
+  }
+  byIdx[idx] = fromUnsplash(u);
+  unsplashHits += byIdx[idx].length;
 }
 
 fs.writeFileSync(cfg.stockPath, JSON.stringify(byIdx), 'utf8');
 
 if (failed) {
-  console.log(`[shadowing] run ${cfg.runId}: ${failed} stock lookup(s) failed, those scenes lean on Openverse`);
+  console.log(`[shadowing] run ${cfg.runId}: ${failed} Unsplash lookup(s) failed, those scenes lean on Openverse`);
 }
 
 return [{
-  json: { stockPath: cfg.stockPath, unsplashHits, pexelsHits, failed },
+  json: { stockPath: cfg.stockPath, unsplashHits, failed },
 }];

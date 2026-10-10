@@ -6,9 +6,9 @@
  * saves them as <dir>/scene_NNN.jpg and <dir>/cover_bg.jpg.
  *
  * Candidates come from two places, in order:
- *   1. stock.json - Unsplash and Pexels results, interleaved. The workflow's HTTP
- *                   nodes hold the API keys and write this file; this script never
- *                   sees a key. See CLAUDE.md, "Secrets".
+ *   1. stock.json - Unsplash results. The workflow's HTTP node holds the API key
+ *                   and Collect Stock writes this file; this script never sees a
+ *                   key. See CLAUDE.md, "Secrets".
  *   2. Openverse  - Creative Commons photos, keyless. Searched only once the stock
  *                   list runs out, because it is the slow one: each query tier is
  *                   a separate request.

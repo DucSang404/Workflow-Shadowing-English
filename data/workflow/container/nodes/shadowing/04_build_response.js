@@ -131,7 +131,7 @@ return [{
     scenes: {
       used: (srt.scenes ?? []).length,
       missing: srt.scenesMissing ?? [],
-      // Only CC BY images oblige a credit line; cc0, Pexels and Unsplash do not.
+      // Only CC BY images oblige a credit line; cc0 and Unsplash do not.
       attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),
       // `off` means no reviewer answered, so every scene took its first candidate.
       reviewer: srt.reviewer ?? 'off',
@@ -142,7 +142,7 @@ return [{
         .map((sc) => ({ idx: sc.idx, score: sc.review.score, missing: sc.review.missing })),
       sources: (srt.scenes ?? []).reduce((n, sc) => ({ ...n, [sc.source]: (n[sc.source] ?? 0) + 1 }), {}),
       credits: (srt.scenes ?? [])
-        .filter((sc) => sc.source === 'unsplash' || sc.source === 'pexels')
+        .filter((sc) => sc.source === 'unsplash')
         .map(({ idx, source, photographer, link }) => ({ idx, source, photographer, link })),
       imageSourceWarning: cfg.imageSourceWarning ?? null,
     },

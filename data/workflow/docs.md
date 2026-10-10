@@ -127,7 +127,7 @@ lại `node host/deploy.js`. Ước lượng: 5 phút, nhưng cần vài run đ�
 ### 13. ~~Chất lượng ảnh sụt mạnh tuỳ chủ đề~~ ✅ ĐÃ CHỮA bằng SD 1.5 local (2026-10-04)
 
 > **Cập nhật 2026-10-10:** bỏ SD, quay về ảnh stock nhưng có **Claude chấm điểm**
-> (Unsplash + Pexels + Openverse, lô 4 ảnh, ngưỡng 72). Vấn đề gốc của #13 — ảnh
+> (Unsplash + Openverse, lô 4 ảnh, ngưỡng 72). Vấn đề gốc của #13 — ảnh
 > stock lệch câu — giờ được bắt bằng điểm thay vì bằng máy vẽ; cảnh không đạt
 > vẫn dùng ảnh tốt nhất và ghi `pass:false` trong record. Xem CLAUDE.md, "Claude
 > chấm ảnh stock".
@@ -200,7 +200,10 @@ liệu khoa học. Nó **không** phải kho ảnh stock đời thường. Hệ 
 Chủ đề **văn phòng / IT / công nghệ hiện đại** là tệ nhất — gần như không có ảnh
 phù hợp trong kho CC0.
 
-**Cách sửa**: nạp key vào credential `Pexels API` (id `WDuL96mPAxBXPRp7`).
+> **2026-10-10:** Pexels đã gỡ khỏi pipeline (ngừng cấp key mới); thay bằng
+> Unsplash + Claude chấm điểm.
+
+**Cách sửa (cũ)**: nạp key vào credential `Pexels API` (id `WDuL96mPAxBXPRp7`).
 Kho Pexels đầy ảnh lập trình viên, họp nhóm, văn phòng. **Không phải sửa code** —
 nhánh Pexels đã lắp sẵn và đã test đường degrade. Lấy key free tại pexels.com/api.
 
@@ -268,7 +271,7 @@ Mỗi video tốn khoảng 10-20 lần gọi `claude -p` vào hạn mức gói C
 
 ### Ảnh stock + Claude chấm điểm ✅ (2026-10-10)
 
-Thay SD bằng ảnh Unsplash/Pexels/Openverse. Claude chấm 0–100 theo lô 4, dùng ảnh
+Thay SD bằng ảnh Unsplash/Openverse. Claude chấm 0–100 theo lô 4, dùng ảnh
 cao nhất ≥ 72, không đạt thì vẫn dùng ảnh cao nhất và ghi FAIL. Không ảnh nào lặp
 trong một video. Ảnh bìa tìm bằng `coverQuery` qua slot `idx 0`. Spec:
 `docs/superpowers/specs/2026-10-10-stock-images-claude-review-design.md`.
@@ -334,7 +337,7 @@ luôn đọc được trên nền ảnh sáng.
 
 | Tầng | Cần key | Ghi chú |
 |---|---|---|
-| Pexels | có (free) | Ảnh stock chuyên nghiệp. Node `Search Pexels` giữ credential, ghi URL ra `pexels.json`; script CLI **không bao giờ thấy key**. |
+| ~~Pexels~~ (gỡ 2026-10-10) | có (free) | Ảnh stock chuyên nghiệp. Node `Search Pexels` giữ credential, ghi URL ra `pexels.json`; script CLI **không bao giờ thấy key**. |
 | Openverse | không | Ảnh Creative Commons. Lọc `cc0,pdm` trước rồi mới `by`; **loại hẳn `by-sa`** vì điều khoản share-alike sẽ lan sang cả video upload. |
 
 Groq sinh thêm `imageQuery` cho từng câu (danh từ cụ thể, chụp ảnh được).
@@ -344,8 +347,8 @@ Openverse cho ảnh đúng, còn khi rơi về topic chung chung thì ra ảnh t
 **Đo thực tế** (6 câu, chủ đề gọi đồ ăn sáng): 6/6 ảnh, toàn `cc0` nên không phải
 ghi nguồn; 5 ảnh rất khớp, 1 tạm được. Thêm ~20s vào thời gian dựng.
 
-**Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.
-Thêm key vào credential `Pexels API` là ảnh đẹp hơn ngay, không phải sửa code.
+~~**Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.~~
+Đã thay bằng Unsplash (2026-10-10).
 Mức độ ảnh hưởng thay đổi rất mạnh theo chủ đề — xem hạn chế **#13**.
 
 **Đã thử và loại**: Pollinations (AI gen, keyless) — ảnh mờ, sai chủ đề và **có

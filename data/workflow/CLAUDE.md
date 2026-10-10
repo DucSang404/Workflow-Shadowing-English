@@ -358,13 +358,17 @@ tồn tại ở đó, không có bản sao nào khác. API key cũ vẫn dùng �
 | `N8N_RUNNERS_ENABLED=true` | Code node trong n8n 2.x cần task runner |
 
 `.env` còn giữ **id** của credential (`CRED_GROQ_ID`, `CRED_EDGETTS_ID`,
-`CRED_PEXELS_ID`, `CRED_UNSPLASH_ID`, `CRED_AWS_ID`, `CRED_BUFFER_ID`) — chỉ là id,
+`CRED_UNSPLASH_ID`, `CRED_AWS_ID`, `CRED_BUFFER_ID`) — chỉ là id,
 không phải giá trị. `host/deploy.js` nối chúng vào node lúc deploy.
 
 **Unsplash** là credential `httpHeaderAuth`: name `Authorization`, value
 `Client-ID <access key>`. Bản demo 50 request/giờ — một run ~7–9 request. API
 guidelines của họ bắt gọi `download_location` cho mỗi ảnh dùng; nhánh phụ
 `Unsplash Downloads → Track Unsplash Download` sau `Fetch Scenes` làm việc đó.
+
+**Pexels đã gỡ (2026-10-10).** Key chưa từng hợp lệ, mỗi run tốn 14 request 401,
+và Pexels đã ngừng cấp key mới. Credential `Pexels API` vẫn còn trong n8n nhưng
+không node nào dùng.
 
 ---
 
@@ -474,7 +478,7 @@ Nên một response có thể 200, `errors` rỗng, mà **không đăng gì cả
 
 Mọi bước chạm vào khoá đều là **node gốc của n8n** — `awsS3` dùng credential `aws`,
 HTTP Request dùng `httpHeaderAuth` cho Buffer. Khoá do credential store mã hoá giữ
-và sửa trên UI; **không Code node nào nhìn thấy chúng**. Đúng kiểu Pexels/Unsplash đã làm
+và sửa trên UI; **không Code node nào nhìn thấy chúng**. Đúng kiểu Unsplash đã làm
 (xem `05_collect_stock.js`).
 
 Thứ không phải khoá — bucket, region, prefix, channelId — nằm ở
@@ -540,7 +544,7 @@ nằm sau cue cuối nên không dịch phụ đề, nhưng **file dài thêm `o
 ### Sinh ảnh cảnh bằng SD 1.5 (chạy trên host)
 
 > ⚠ **Lịch sử — không còn trong pipeline từ 2026-10-10.** Ảnh cảnh giờ lấy từ
-> Unsplash/Pexels/Openverse và được Claude chấm điểm (mục kế tiếp). Phần dưới giữ
+> Unsplash/Openverse và được Claude chấm điểm (mục kế tiếp). Phần dưới giữ
 > lại vì các con số đo được vẫn đúng nếu có ngày quay lại sinh ảnh.
 
 **Không thể đưa vào `docker-compose`.** Docker Desktop trên macOS không với được
@@ -675,7 +679,7 @@ generator bật — chạy song song chỉ xếp hàng chờ nhau trong khi nhâ
 
 Tìm ảnh stock khớp **từ khoá**, không khớp **câu**: tìm siro cho câu gọi cà phê ra
 siro trên bánh pancake, decode hoàn hảo. Nên mỗi cảnh có tới 8 ứng viên
-(Unsplash/Pexels xen kẽ từ `stock.json`, rồi Openverse), Claude chấm **0–100** từng
+(10 kết quả Unsplash trong `stock.json`, hết thì Openverse), Claude chấm **0–100** từng
 ảnh theo lô 4, và `fetch_scenes.js` dùng ảnh cao nhất **≥ `passScore`** (mặc định
 **72**). Lô 1 không có ảnh đạt thì chấm lô 2; vẫn không đạt thì **vẫn dùng ảnh cao
 nhất** và ghi `pass:false` — ảnh yếu hơn lỗ trong video. Không ảnh nào dùng hai lần

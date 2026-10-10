@@ -196,7 +196,7 @@
             },
             {
               "name": "per_page",
-              "value": "6"
+              "value": "10"
             },
             {
               "name": "orientation",
@@ -230,64 +230,17 @@
       }
     },
     {
-      "id": "n-pexels",
-      "name": "Search Pexels",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.5,
-      "position": [
-        1140,
-        0
-      ],
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 1000,
-      "parameters": {
-        "method": "GET",
-        "url": "https://api.pexels.com/v1/search",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "specifyQuery": "keypair",
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "query",
-              "value": "={{ $('Parse & Normalize').item.json.imageQuery }}"
-            },
-            {
-              "name": "per_page",
-              "value": "6"
-            },
-            {
-              "name": "orientation",
-              "value": "landscape"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 20000
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "WDuL96mPAxBXPRp7",
-          "name": "Pexels API"
-        }
-      }
-    },
-    {
       "id": "n-stock-collect",
       "name": "Collect Stock",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1360,
+        1140,
         0
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Collects the Unsplash and Pexels search results into stock.json, which\n// fetch_scenes.js reads as each scene's candidate list.\n//\n// The indirection exists so the API keys stay in the n8n credential store: the\n// HTTP nodes hold the credentials, this node only ever sees what they returned,\n// and the CLI script never touches a key at all.\n//\n// Both searches are optional. With no key, a bad key or an exhausted quota a\n// search node passes its error through instead of failing, that library is just\n// absent here, and fetch_scenes.js falls back to Openverse.\n//\n// Item 0 is the title card's slot: its query is the manifest's coverQuery.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\n\n// Unsplash asks for these on every link back to a photographer or to Unsplash.\nconst UTM = 'utm_source=shadowing_video&utm_medium=referral';\n\nfunction fromUnsplash(json) {\n  return (json?.results ?? []).filter((p) => p?.urls?.raw).map((p) => ({\n    source: 'unsplash',\n    id: String(p.id),\n    // raw plus an explicit width: `regular` is fixed at 1080, short of a 1920 frame.\n    url: `${p.urls.raw}&w=1920&fm=jpg&q=80`,\n    photographer: p.user?.name ?? null,\n    link: p.user?.links?.html ? `${p.user.links.html}?${UTM}` : null,\n    // Unsplash's API guidelines require a request to this for every photo used.\n    downloadLocation: p.links?.download_location ?? null,\n  }));\n}\n\nfunction fromPexels(json) {\n  return (json?.photos ?? []).filter((p) => p?.src?.large2x || p?.src?.large).map((p) => ({\n    source: 'pexels',\n    id: String(p.id),\n    // large2x is ~1880px wide: plenty for a 1920 frame, far smaller than original.\n    url: p.src.large2x ?? p.src.large,\n    photographer: p.photographer ?? null,\n    link: p.url ?? null,\n  }));\n}\n\n/** u1, p1, u2, p2 ... so the first batch Claude sees has both libraries in it. */\nfunction interleave(a, b) {\n  const out = [];\n  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {\n    if (a[i]) out.push(a[i]);\n    if (b[i]) out.push(b[i]);\n  }\n  return out;\n}\n\nconst pexels = $input.all();\nconst unsplash = $('Search Unsplash').all();\nconst byIdx = {};\nlet unsplashHits = 0;\nlet pexelsHits = 0;\nlet failed = 0;\n\nfor (let i = 0; i < pexels.length; i += 1) {\n  // The paired item, not .all()[i]: Keep Successful Audio drops sentences whose\n  // TTS failed, so positions here do not line up with Parse & Normalize's.\n  let idx;\n  try {\n    idx = $('Parse & Normalize').itemMatching(i)?.json?.idx;\n  } catch {\n    idx = undefined;\n  }\n  if (idx === undefined || idx === null) continue;\n\n  const u = unsplash[i]?.json ?? {};\n  const p = pexels[i]?.json ?? {};\n  if (u.error) failed += 1;\n  if (p.error) failed += 1;\n\n  const fromU = u.error ? [] : fromUnsplash(u);\n  const fromP = p.error ? [] : fromPexels(p);\n  unsplashHits += fromU.length;\n  pexelsHits += fromP.length;\n  byIdx[idx] = interleave(fromU, fromP);\n}\n\nfs.writeFileSync(cfg.stockPath, JSON.stringify(byIdx), 'utf8');\n\nif (failed) {\n  console.log(`[shadowing] run ${cfg.runId}: ${failed} stock lookup(s) failed, those scenes lean on Openverse`);\n}\n\nreturn [{\n  json: { stockPath: cfg.stockPath, unsplashHits, pexelsHits, failed },\n}];\n"
+        "jsCode": "// Collects the Unsplash search results into stock.json, which fetch_scenes.js\n// reads as each scene's candidate list.\n//\n// The indirection exists so the API key stays in the n8n credential store: the\n// HTTP node holds the credential, this node only ever sees what it returned, and\n// the CLI script never touches a key at all.\n//\n// The search is optional. With no key, a bad key or an exhausted quota the\n// search node passes its error through instead of failing, the scene simply has\n// no stock list here, and fetch_scenes.js falls back to Openverse.\n//\n// Pexels used to be searched alongside. Removed 2026-10-10: the key was never\n// valid, every run spent 14 requests on 401s, and Pexels had stopped issuing new\n// keys. Unsplash alone passed 5 of 6 scenes on the first run.\n//\n// Item 0 is the title card's slot: its query is the manifest's coverQuery.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\n\n// Unsplash asks for these on every link back to a photographer or to Unsplash.\nconst UTM = 'utm_source=shadowing_video&utm_medium=referral';\n\nfunction fromUnsplash(json) {\n  return (json?.results ?? []).filter((p) => p?.urls?.raw).map((p) => ({\n    source: 'unsplash',\n    id: String(p.id),\n    // raw plus an explicit width: `regular` is fixed at 1080, short of a 1920 frame.\n    url: `${p.urls.raw}&w=1920&fm=jpg&q=80`,\n    photographer: p.user?.name ?? null,\n    link: p.user?.links?.html ? `${p.user.links.html}?${UTM}` : null,\n    // Unsplash's API guidelines require a request to this for every photo used.\n    downloadLocation: p.links?.download_location ?? null,\n  }));\n}\n\nconst unsplash = $input.all();\nconst byIdx = {};\nlet unsplashHits = 0;\nlet failed = 0;\n\nfor (let i = 0; i < unsplash.length; i += 1) {\n  // The paired item, not .all()[i]: Keep Successful Audio drops sentences whose\n  // TTS failed, so positions here do not line up with Parse & Normalize's.\n  let idx;\n  try {\n    idx = $('Parse & Normalize').itemMatching(i)?.json?.idx;\n  } catch {\n    idx = undefined;\n  }\n  if (idx === undefined || idx === null) continue;\n\n  const u = unsplash[i]?.json ?? {};\n  if (u.error) {\n    failed += 1;\n    continue;\n  }\n  byIdx[idx] = fromUnsplash(u);\n  unsplashHits += byIdx[idx].length;\n}\n\nfs.writeFileSync(cfg.stockPath, JSON.stringify(byIdx), 'utf8');\n\nif (failed) {\n  console.log(`[shadowing] run ${cfg.runId}: ${failed} Unsplash lookup(s) failed, those scenes lean on Openverse`);\n}\n\nreturn [{\n  json: { stockPath: cfg.stockPath, unsplashHits, failed },\n}];\n"
       }
     },
     {
@@ -296,7 +249,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        1580,
+        1360,
         0
       ],
       "parameters": {
@@ -310,7 +263,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1800,
+        1580,
         220
       ],
       "parameters": {
@@ -324,7 +277,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        2020,
+        1800,
         220
       ],
       "onError": "continueRegularOutput",
@@ -350,7 +303,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        1800,
+        1580,
         0
       ],
       "parameters": {
@@ -364,7 +317,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        2020,
+        1800,
         0
       ],
       "parameters": {
@@ -378,7 +331,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2240,
+        2020,
         0
       ],
       "parameters": {
@@ -392,7 +345,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        2460,
+        2240,
         0
       ],
       "parameters": {
@@ -406,12 +359,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2680,
+        2460,
         0
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Shapes the webhook response and clears the run's scratch space.\n//\n// Skipped sentences are surfaced rather than swallowed: the video is still valid,\n// but the caller should know it is short a line and why.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\nconst srt = $('Build SRT').first().json;\n\nconst raw = $input.first().json.stdout;\nif (!raw) {\n  throw new Error('video assembly produced no output - '\n    + JSON.stringify($input.first().json).slice(0, 300).replace(/:/g, '='));\n}\nconst built = JSON.parse(raw);\n\n// Everything worth keeping moves next to the mp4, so output/ holds the complete\n// deliverable and work/ is pure scratch that can be wiped without thought.\n// A run of eight sentences leaves ~4 MB of mp3 and wav behind otherwise.\n//\n// The record is composed rather than copied: it folds the manifest together with\n// the measured durations and gap windows, which is what host/verify-sync.js needs\n// to re-audit subtitle drift once the work directory is gone.\nconst keptSrt = `${cfg.outputDir}/${cfg.runId}.srt`;\nconst keptRecord = `${cfg.outputDir}/${cfg.runId}.json`;\n// Plain text, next to the mp4, because the TikTok inbox-draft route IGNORES every\n// post_info field - the caption is typed in the app, so what this run can usefully\n// hand over is something to paste rather than something to send.\nconst keptCaption = `${cfg.outputDir}/${cfg.runId}_caption.txt`;\nlet cleaned = false;\n// Hoisted out of the try because the response below reads the caption off it, and\n// housekeeping failing must not take the caption down with it.\nlet manifest = null;\n\ntry {\n  manifest = JSON.parse(fs.readFileSync(cfg.manifestPath, 'utf8'));\n  const plan = JSON.parse(fs.readFileSync(cfg.planPath, 'utf8'));\n\n  fs.copyFileSync(cfg.srtPath, keptSrt);\n\n  const tags = (manifest.hashtags ?? []).map((t) => `#${t}`).join(' ');\n  fs.writeFileSync(keptCaption, `${manifest.caption ?? ''}\\n\\n${tags}\\n`, 'utf8');\n\n  fs.writeFileSync(keptRecord, JSON.stringify({\n    runId: cfg.runId,\n    topic: cfg.topic,\n    createdAt: new Date().toISOString(),\n    gapSeconds: cfg.gapSeconds,\n    // The title card shifts every cue by this much; host/verify-sync.js needs it\n    // to know where cue 1 is supposed to start.\n    introSec: srt.introSec ?? 0,\n    // host/verify-sync.js needs these: a spoken brand line runs straight into the\n    // first sentence, so cue 1 has no detectable silence in front of it.\n    introLine: srt.introLine ?? null,\n    introMs: srt.introMs ?? 0,\n    introVoiced: Boolean(srt.introLine),\n    // The end card lengthens the file without moving any cue; host/verify-sync.js\n    // adds it back when it compares the timeline with the shipped mp4.\n    outroSec: srt.outroSec ?? 0,\n    brand: cfg.brand,\n    voices: { A: cfg.voiceA, B: cfg.voiceB },\n    speed: cfg.speed,\n    orientation: cfg.orientation,\n    sentences: manifest.sentences,\n    segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),\n    scenes: srt.scenes,\n    // Claude's score for the title-card backdrop; each scene carries its own.\n    coverReview: srt.coverReview ?? null,\n    passScore: srt.passScore ?? cfg.passScore,\n    caption: manifest.caption ?? null,\n    hashtags: manifest.hashtags ?? [],\n    outputs: built.outputs,\n    covers: built.covers ?? [],\n    durationSec: built.durationSec,\n    // host/verify-sync.js reads `audio` to prove the music bed did not move the\n    // timeline the subtitles were built from.\n    audio: built.audio ?? null,\n    music: built.music ?? null,\n    loudness: built.loudness,\n    skippedSentences: srt.skipped,\n    intro: {\n      line: srt.introLine,\n      ms: srt.introMs,\n      // Present only when the brand line failed TTS and the card fell back to silence.\n      missing: srt.introMissing ?? null,\n    },\n  }, null, 2), 'utf8');\n\n  if (!cfg.keepWorkDir) {\n    fs.rmSync(cfg.workDir, { recursive: true, force: true });\n    cleaned = true;\n  }\n} catch (err) {\n  // Housekeeping must never fail a run that already produced a video.\n  console.log(`[shadowing] run ${cfg.runId}: cleanup skipped - ${err.message}`);\n}\n\nreturn [{\n  json: {\n    ok: true,\n    runId: cfg.runId,\n    topic: cfg.topic,\n    video: built.output,\n    videos: built.outputs,\n    cover: built.cover ?? null,\n    covers: built.covers ?? [],\n    subtitle: keptSrt,\n    caption: manifest?.caption ?? null,\n    captionFile: keptCaption,\n    record: keptRecord,\n    sentences: built.segments,\n    gapSeconds: cfg.gapSeconds,\n    voices: { A: cfg.voiceA, B: cfg.voiceB },\n    orientation: cfg.orientation,\n    durationSec: built.durationSec,\n    sizeBytes: built.sizeBytes,\n    audio: built.audio ?? null,\n    loudness: built.loudness,\n    // `music: null` means none was asked for or none was found; `used: false`\n    // means one was found and then rejected - the reason says which.\n    music: built.music\n      ? { ...built.music, lookup: srt.musicReason ?? null }\n      : { used: false, reason: srt.musicReason ?? 'no music' },\n    skippedSentences: srt.skipped,\n    intro: {\n      line: srt.introLine,\n      ms: srt.introMs,\n      // Present only when the brand line failed TTS and the card fell back to silence.\n      missing: srt.introMissing ?? null,\n    },\n    outroSec: srt.outroSec ?? 0,\n    scenes: {\n      used: (srt.scenes ?? []).length,\n      missing: srt.scenesMissing ?? [],\n      // Only CC BY images oblige a credit line; cc0, Pexels and Unsplash do not.\n      attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),\n      // `off` means no reviewer answered, so every scene took its first candidate.\n      reviewer: srt.reviewer ?? 'off',\n      passScore: srt.passScore ?? cfg.passScore,\n      reviewCalls: srt.reviewCalls ?? 0,\n      passed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === true).length,\n      failed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === false)\n        .map((sc) => ({ idx: sc.idx, score: sc.review.score, missing: sc.review.missing })),\n      sources: (srt.scenes ?? []).reduce((n, sc) => ({ ...n, [sc.source]: (n[sc.source] ?? 0) + 1 }), {}),\n      credits: (srt.scenes ?? [])\n        .filter((sc) => sc.source === 'unsplash' || sc.source === 'pexels')\n        .map(({ idx, source, photographer, link }) => ({ idx, source, photographer, link })),\n      imageSourceWarning: cfg.imageSourceWarning ?? null,\n    },\n    coverError: built.coverError ?? null,\n    workDirCleaned: cleaned,\n  },\n}];\n"
+        "jsCode": "// Shapes the webhook response and clears the run's scratch space.\n//\n// Skipped sentences are surfaced rather than swallowed: the video is still valid,\n// but the caller should know it is short a line and why.\nconst fs = require('fs');\nconst cfg = $('Prepare Run').first().json;\nconst srt = $('Build SRT').first().json;\n\nconst raw = $input.first().json.stdout;\nif (!raw) {\n  throw new Error('video assembly produced no output - '\n    + JSON.stringify($input.first().json).slice(0, 300).replace(/:/g, '='));\n}\nconst built = JSON.parse(raw);\n\n// Everything worth keeping moves next to the mp4, so output/ holds the complete\n// deliverable and work/ is pure scratch that can be wiped without thought.\n// A run of eight sentences leaves ~4 MB of mp3 and wav behind otherwise.\n//\n// The record is composed rather than copied: it folds the manifest together with\n// the measured durations and gap windows, which is what host/verify-sync.js needs\n// to re-audit subtitle drift once the work directory is gone.\nconst keptSrt = `${cfg.outputDir}/${cfg.runId}.srt`;\nconst keptRecord = `${cfg.outputDir}/${cfg.runId}.json`;\n// Plain text, next to the mp4, because the TikTok inbox-draft route IGNORES every\n// post_info field - the caption is typed in the app, so what this run can usefully\n// hand over is something to paste rather than something to send.\nconst keptCaption = `${cfg.outputDir}/${cfg.runId}_caption.txt`;\nlet cleaned = false;\n// Hoisted out of the try because the response below reads the caption off it, and\n// housekeeping failing must not take the caption down with it.\nlet manifest = null;\n\ntry {\n  manifest = JSON.parse(fs.readFileSync(cfg.manifestPath, 'utf8'));\n  const plan = JSON.parse(fs.readFileSync(cfg.planPath, 'utf8'));\n\n  fs.copyFileSync(cfg.srtPath, keptSrt);\n\n  const tags = (manifest.hashtags ?? []).map((t) => `#${t}`).join(' ');\n  fs.writeFileSync(keptCaption, `${manifest.caption ?? ''}\\n\\n${tags}\\n`, 'utf8');\n\n  fs.writeFileSync(keptRecord, JSON.stringify({\n    runId: cfg.runId,\n    topic: cfg.topic,\n    createdAt: new Date().toISOString(),\n    gapSeconds: cfg.gapSeconds,\n    // The title card shifts every cue by this much; host/verify-sync.js needs it\n    // to know where cue 1 is supposed to start.\n    introSec: srt.introSec ?? 0,\n    // host/verify-sync.js needs these: a spoken brand line runs straight into the\n    // first sentence, so cue 1 has no detectable silence in front of it.\n    introLine: srt.introLine ?? null,\n    introMs: srt.introMs ?? 0,\n    introVoiced: Boolean(srt.introLine),\n    // The end card lengthens the file without moving any cue; host/verify-sync.js\n    // adds it back when it compares the timeline with the shipped mp4.\n    outroSec: srt.outroSec ?? 0,\n    brand: cfg.brand,\n    voices: { A: cfg.voiceA, B: cfg.voiceB },\n    speed: cfg.speed,\n    orientation: cfg.orientation,\n    sentences: manifest.sentences,\n    segments: plan.segments.map((s) => ({ idx: s.idx, duration: s.duration })),\n    scenes: srt.scenes,\n    // Claude's score for the title-card backdrop; each scene carries its own.\n    coverReview: srt.coverReview ?? null,\n    passScore: srt.passScore ?? cfg.passScore,\n    caption: manifest.caption ?? null,\n    hashtags: manifest.hashtags ?? [],\n    outputs: built.outputs,\n    covers: built.covers ?? [],\n    durationSec: built.durationSec,\n    // host/verify-sync.js reads `audio` to prove the music bed did not move the\n    // timeline the subtitles were built from.\n    audio: built.audio ?? null,\n    music: built.music ?? null,\n    loudness: built.loudness,\n    skippedSentences: srt.skipped,\n    intro: {\n      line: srt.introLine,\n      ms: srt.introMs,\n      // Present only when the brand line failed TTS and the card fell back to silence.\n      missing: srt.introMissing ?? null,\n    },\n  }, null, 2), 'utf8');\n\n  if (!cfg.keepWorkDir) {\n    fs.rmSync(cfg.workDir, { recursive: true, force: true });\n    cleaned = true;\n  }\n} catch (err) {\n  // Housekeeping must never fail a run that already produced a video.\n  console.log(`[shadowing] run ${cfg.runId}: cleanup skipped - ${err.message}`);\n}\n\nreturn [{\n  json: {\n    ok: true,\n    runId: cfg.runId,\n    topic: cfg.topic,\n    video: built.output,\n    videos: built.outputs,\n    cover: built.cover ?? null,\n    covers: built.covers ?? [],\n    subtitle: keptSrt,\n    caption: manifest?.caption ?? null,\n    captionFile: keptCaption,\n    record: keptRecord,\n    sentences: built.segments,\n    gapSeconds: cfg.gapSeconds,\n    voices: { A: cfg.voiceA, B: cfg.voiceB },\n    orientation: cfg.orientation,\n    durationSec: built.durationSec,\n    sizeBytes: built.sizeBytes,\n    audio: built.audio ?? null,\n    loudness: built.loudness,\n    // `music: null` means none was asked for or none was found; `used: false`\n    // means one was found and then rejected - the reason says which.\n    music: built.music\n      ? { ...built.music, lookup: srt.musicReason ?? null }\n      : { used: false, reason: srt.musicReason ?? 'no music' },\n    skippedSentences: srt.skipped,\n    intro: {\n      line: srt.introLine,\n      ms: srt.introMs,\n      // Present only when the brand line failed TTS and the card fell back to silence.\n      missing: srt.introMissing ?? null,\n    },\n    outroSec: srt.outroSec ?? 0,\n    scenes: {\n      used: (srt.scenes ?? []).length,\n      missing: srt.scenesMissing ?? [],\n      // Only CC BY images oblige a credit line; cc0 and Unsplash do not.\n      attributions: (srt.scenes ?? []).map((sc) => sc.attribution).filter(Boolean),\n      // `off` means no reviewer answered, so every scene took its first candidate.\n      reviewer: srt.reviewer ?? 'off',\n      passScore: srt.passScore ?? cfg.passScore,\n      reviewCalls: srt.reviewCalls ?? 0,\n      passed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === true).length,\n      failed: (srt.scenes ?? []).filter((sc) => sc.review?.pass === false)\n        .map((sc) => ({ idx: sc.idx, score: sc.review.score, missing: sc.review.missing })),\n      sources: (srt.scenes ?? []).reduce((n, sc) => ({ ...n, [sc.source]: (n[sc.source] ?? 0) + 1 }), {}),\n      credits: (srt.scenes ?? [])\n        .filter((sc) => sc.source === 'unsplash')\n        .map(({ idx, source, photographer, link }) => ({ idx, source, photographer, link })),\n      imageSourceWarning: cfg.imageSourceWarning ?? null,\n    },\n    coverError: built.coverError ?? null,\n    workDirCleaned: cleaned,\n  },\n}];\n"
       }
     },
     {
@@ -420,7 +373,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        2900,
+        2680,
         0
       ],
       "parameters": {
@@ -509,17 +462,6 @@
       ]
     },
     "Search Unsplash": {
-      "main": [
-        [
-          {
-            "node": "Search Pexels",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Search Pexels": {
       "main": [
         [
           {
