@@ -60,6 +60,7 @@ data/workflow/
 │   ├── deploy.js             ← điểm vào duy nhất để deploy
 │   ├── inspect-execution.js  ← debug một lần chạy
 │   ├── verify-sync.js        ← regression test cho drift phụ đề
+│   ├── migrate-topics.js     ← một lần: topics.json → topics/
 │   ├── lib/
 │   │   ├── config.js         ← đọc .env
 │   │   └── n8n.js            ← REST client + upsertWorkflow
@@ -69,13 +70,16 @@ data/workflow/
 │   │   └── run.sh
 │   ├── imagereview/          ← Claude chấm điểm ảnh stock theo lô, HTTP 127.0.0.1:7861
 │   │   ├── server.js
+│   │   ├── claude.js         ← spawn claude -p, dùng chung
+│   │   ├── topics.js         ← POST /topics
 │   │   ├── check.js          ← kiểm thang điểm trên fixture
 │   │   └── fixtures/
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
 │       ├── shadowing-stub.js
 │       ├── tiktok-publish.js  ← đường trực tiếp, chỉ bỏ draft vào hộp thư
-│       └── buffer-publish.js  ← đường đang dùng, đăng công khai
+│       ├── buffer-publish.js  ← đường đang dùng, đăng công khai
+│       └── daily.js           ← lịch tự động; KEEP_RUNS, nhúng lib/topics.js
 │
 ├── container/                ← chạy trong container n8n
 │   ├── cli/                  ← gọi bởi Execute Command node
@@ -84,6 +88,7 @@ data/workflow/
 │   │   ├── fetch_scenes.js
 │   │   ├── fetch_music.js
 │   │   ├── build_video.js
+│   │   ├── prune_output.js   ← giữ N run mới nhất trong output/
 │   │   ├── tiktok_token.js   ← CHỦ SỞ HỮU DUY NHẤT của vòng đời OAuth token
 │   │   └── tiktok_publish.js
 │   └── nodes/                ← nội dung Code node, nhóm theo workflow
@@ -94,6 +99,12 @@ data/workflow/
 │       │   ├── 04_build_response.js
 │       │   ├── 05_collect_stock.js
 │       │   └── 06_unsplash_downloads.js
+│       ├── daily/
+│       │   ├── lib/topics.js       ← hàm thuần, có test; NHÚNG vào Code node lúc deploy
+│       │   ├── 01_pick_topic.js
+│       │   ├── 02_record_run.js
+│       │   ├── 03_check_topics.js
+│       │   └── 04_merge_topics.js
 │       ├── tiktok-publish/
 │       │   ├── 01_resolve_video.js
 │       │   └── 02_build_response.js
@@ -108,6 +119,9 @@ data/workflow/
 │   ├── tiktok-publish.json
 │   └── buffer-publish.json
 │
+├── topics/
+│   ├── pool.json             ← danh sách topic: bạn sửa tay, Claude tự thêm. Có trong git
+│   └── state.json            ← workflow ghi (đã dùng, history, refills). Gitignored
 ├── publish.config.json       ← bucket/region/channel — KHÔNG phải secret, có trong git
 │
 ├── secrets/                  ← chmod 600, gitignored (trừ file .example)
@@ -190,6 +204,14 @@ node host/imagereview/check.js      # kiểm thang điểm sau mỗi lần sửa
 #   passScore: 72 (mặc định) — ảnh cao nhất ≥ ngưỡng được dùng; không đạt vẫn dùng, ghi FAIL
 
 node --test container/cli/lib/*.test.js      # test logic chọn ảnh
+node --test container/cli/*.test.js            # test prune_output
+node --test container/nodes/daily/lib/*.test.js  # test logic topic
+
+# chạy daily mà không đăng Buffer (trả ngay; xem tiến độ bằng inspect-execution)
+curl -X POST http://localhost:5678/webhook/daily-dry-run
+#   dry run gọi cả workflow shadowing, nên inspect-execution không tham số có thể
+#   ra execution của shadowing — lấy id run daily (vd. trong UI n8n) rồi:
+#   node host/inspect-execution.js <id>
 
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
@@ -203,16 +225,36 @@ curl -X POST http://localhost:5678/webhook/shadowing \
 
 ### Chạy tự động mỗi ngày
 
-Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **18:00** và hẹn Buffer
-đăng lúc **19:00** cùng ngày, múi giờ `Asia/Ho_Chi_Minh`. Nó gọi lại chính hai
+Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **07:00 và 19:00** và hẹn Buffer
+đăng lúc **08:00 và 20:00** cùng ngày, múi giờ `Asia/Ho_Chi_Minh`. Nó gọi lại chính hai
 webhook `shadowing` và `buffer-publish` chứ không nhân bản node của chúng — hai
 endpoint đó là thứ đã được bấm tay suốt quá trình, một đường chạy khác sẽ là thêm
 một thứ nữa phải tin. Một tiếng dự phòng giữa dựng và đăng là có chủ ý: dựng mất
 ~100s khi mọi thứ ngoan, nhưng nó phải với tới Groq, ảnh stock, Claude và S3.
 
-**Chủ đề lấy từ `topics.json`, chọn theo *ít dùng gần đây nhất*** — không phải
-ngẫu nhiên, vì ngẫu nhiên lặp lại sớm hơn người ta tưởng nhiều. Danh sách tự xoay
-vòng và sửa lúc nào cũng được; `history` do workflow ghi, đừng sửa tay.
+**Chủ đề lấy từ `topics/pool.json`, chọn theo *ít dùng gần đây nhất*** — không phải
+ngẫu nhiên, vì ngẫu nhiên lặp lại sớm hơn người ta tưởng nhiều. Sửa `pool.json` lúc
+nào cũng được. Thứ workflow ghi (`used`, `history`, `refills`) nằm ở
+`topics/state.json`, gitignored — nên `git status` không bẩn sau mỗi lần chạy.
+
+**Pool tự bổ sung.** Khi ≥ `refill.threshold` (0.9) số topic đã chạy ít nhất một lần,
+cuối run `daily` gọi `POST :7861/topics` — Claude viết thêm `refill.batch` (30) topic,
+code lọc trùng / sai độ dài rồi nối vào `pool.json` với `source: "claude"`. **Duyệt
+bằng `git diff topics/pool.json`.** Reviewer tắt thì chỉ ghi lỗi vào `state.refills`
+và thử lại lần sau; picker vẫn còn ~10% topic chưa dùng.
+
+**`output/` chỉ giữ 10 run mới nhất** (`KEEP_RUNS` trong `host/workflows/daily.js`),
+dọn sau khi đăng — `buffer-publish` cần mp4 tới lúc đó, Buffer lấy bản trên S3.
+File không bắt đầu bằng runId không bị đụng.
+
+**Chạy thử không đăng:** `curl -X POST http://localhost:5678/webhook/daily-dry-run`
+— dựng, ghi state, dọn, kiểm topic, **bỏ qua Buffer**. Không nhận tham số, nên không
+thể dùng nó để đăng bài. Dry run vẫn tốn một lượt Groq và tính là đã dùng topic.
+
+**Code node của `daily` dùng chung `lib/topics.js`.** Code node không `require` được
+file dự án, nên `nodeCodeWithLib()` trong `host/workflows/daily.js` nối phần trên dòng
+`// --- exports (stripped when embedded) ---` vào trước node. Test:
+`node --test container/nodes/daily/lib/*.test.js`. Đừng xoá dòng đánh dấu đó.
 
 ⚠ **`schedulingType` bắt buộc trên MỌI post Buffer, kể cả post hẹn giờ.** Thiếu nó
 là `GRAPHQL_VALIDATION_FAILED`. Và nó **không** phải thứ đặt giờ — enum chỉ có
@@ -225,7 +267,7 @@ là container dừng:
 
 ```bash
 caffeinate -s                                      # giữ thức, chạy trong 1 terminal
-sudo pmset repeat wakeorpoweron MTWRFSU 17:55:00   # hoặc tự thức trước 18:00
+sudo pmset repeat wakeorpoweron MTWRFSU 06:55:00   # hoặc tự thức trước 07:00 (lịch 19:00 thì máy thường đang thức)
 ```
 
 **Generator ảnh không còn dùng** (2026-10-10). Nếu LaunchAgent cũ còn nạp thì gỡ
@@ -236,7 +278,7 @@ launchctl unload ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
 rm ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
 ```
 
-**Reviewer phải chạy lúc 18:00**, không thì mọi cảnh lấy ứng viên đầu tiên, không ai chấm:
+**Reviewer phải chạy lúc 07:00 và 19:00**, không thì mọi cảnh lấy ứng viên đầu tiên, không ai chấm:
 
 ```bash
 cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
@@ -706,6 +748,8 @@ trong một video (`candidateKey` + `used` trong `pickBest`).
   vật cố định đã bỏ cùng với SD.
 - **Ảnh bìa dùng slot `idx 0`** — item câu thương hiệu vốn đã đi qua node search;
   query của nó là `coverQuery` Groq sinh ra.
+- **Cùng server còn có `POST /topics`** (`topics.js`) cho việc bổ sung topic. Hai route
+  dùng chung `claude.js` (cờ của `claude -p` nằm một chỗ) và chung semaphore 2 lời gọi.
 
 ### Gọi API ảnh bên ngoài
 

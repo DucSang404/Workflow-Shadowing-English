@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * Scene reviewer: Claude scores stock-photo candidates against the line of
- * dialogue each scene illustrates.
+ * Claude on the host, for the parts of the pipeline the n8n container cannot do
+ * itself (the hardened image has no `claude` and cannot get one).
  *
  *   node host/imagereview/server.js        # :7861, loopback only
  *
  *   GET  /health
  *   POST /review   { kind, topic, line, dialogue, images: [{ id, mediaType, data }] }
  *               -> { required, scores: [{ id, present, missing, issues, score }], model, ms }
+ *   POST /topics   { existing, recent, count }
+ *               -> { topics, model, ms }                       (see topics.js)
  *
- * Why it exists: a stock search matches keywords, not the line. A search for the
- * syrup in a coffee order finds syrup on pancakes, and nothing in the pipeline can
- * tell - every pixel decodes fine. Claude can tell, so fetch_scenes.js sends the
+ * /review: a stock search matches keywords, not the line. A search for the syrup
+ * in a coffee order finds syrup on pancakes, and nothing in the pipeline can tell
+ * - every pixel decodes fine. Claude can tell, so fetch_scenes.js sends the
  * candidates here and keeps the best one at or above its pass score.
  *
  * This server only SCORES. The bar (72 by default) is applied in fetch_scenes.js,
@@ -20,36 +22,25 @@
  * it is a quarter of the calls. `node host/imagereview/check.js` re-checks the
  * scale against a fixed fixture after any prompt or model change.
  *
- * It runs on the HOST because it drives the `claude` CLI you are already logged in
- * to. The n8n image has no `claude` and cannot get one (see CLAUDE.md, container
- * constraints). The call is `claude -p` with:
- *   - the images sent inline over stream-json, so no tool is needed to read them
- *   - `--tools ""`: the reviewer can look, and do nothing else
- *   - `--json-schema`, so the verdict is parsed, never scraped out of prose
- *   - its own system prompt, and a cwd outside the project, so neither Claude
- *     Code's default prompt nor this repo's 40 KB CLAUDE.md is paid for per call
+ * How Claude is called lives in claude.js, shared by both routes.
  *
  * Bound to 127.0.0.1, not 0.0.0.0: Docker Desktop still routes
  * host.docker.internal to it (verified from inside shadowing-n8n), and nothing on
  * the LAN can spend your Claude usage.
  *
- * A reviewer that is down, slow or rate-limited answers 503 and the caller uses
- * its first candidate unreviewed. Review improves pictures; it must never cost a
- * video.
+ * Down, slow or rate-limited, a route answers 503 and the caller carries on
+ * without it: an unreviewed scene, or no new topics until the next run. Claude
+ * improves the output; it must never cost a video.
  */
 const http = require('http');
-const os = require('os');
-const path = require('path');
-const { spawn } = require('child_process');
+const { MODEL, askClaude } = require('./claude');
+const topics = require('./topics');
 
 const PORT = Number(process.env.IMAGEREVIEW_PORT ?? 7861);
-// Sonnet over Haiku: the whole point is telling an iced latte from an iced tea.
-const MODEL = process.env.IMAGEREVIEW_MODEL ?? 'sonnet';
-const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 // Four images per call instead of one, so more than the single-image 90 s.
 const CALL_TIMEOUT_MS = 120000;
 // Scenes are reviewed while other scenes download, so two is enough to keep up,
-// and more would only spend usage faster.
+// and more would only spend usage faster. Shared by every route.
 const MAX_CONCURRENT = 2;
 const MAX_IMAGES = 4;
 // Four 768 px thumbnails are ~1 MB of base64; this is headroom, not a target.
@@ -123,8 +114,8 @@ you score every one of them.
    the others only to keep your numbers consistent.
 5. Return exactly one entry in scores for EVERY candidate id you were shown.`;
 
-/** The user turn: each labelled candidate, then everything needed to judge them. */
-function reviewMessage(req) {
+/** The /review user content: each labelled candidate, then everything needed to judge them. */
+function reviewContent(req) {
   const lines = (req.dialogue ?? []).map((d) =>
     `${d.idx === req.line?.idx ? '>>' : '  '}${d.idx} ${d.speaker}: ${d.en}`);
   const context = req.kind === 'cover'
@@ -154,59 +145,52 @@ function reviewMessage(req) {
     text: [...context, `Score these candidates: ${req.images.map((i) => i.id).join(', ')}`]
       .filter(Boolean).join('\n'),
   });
-  return { type: 'user', message: { role: 'user', content } };
+  return content;
 }
 
-/** One `claude -p` call. Resolves to the structured verdict or throws. */
-function askClaude(req) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(CLAUDE_BIN, [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--tools', '',
-      '--strict-mcp-config',
-      '--no-session-persistence',
-      '--model', MODEL,
-      '--system-prompt', SYSTEM_PROMPT,
-      '--json-schema', JSON.stringify(SCHEMA),
-    ], {
-      cwd: os.tmpdir(),
-      env: { ...process.env, PATH: `${path.join(os.homedir(), '.local', 'bin')}:${process.env.PATH}` },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+/** Null when the batch is well-formed, otherwise the reason it is not. */
+function badImages(images) {
+  if (!Array.isArray(images) || !images.length || images.length > MAX_IMAGES) {
+    return `images must be an array of 1 to ${MAX_IMAGES}`;
+  }
+  if (images.some((i) => !i?.id || !i?.data)) return 'every image needs an id and base64 data';
+  if (new Set(images.map((i) => i.id)).size !== images.length) return 'image ids must be unique';
+  return null;
+}
 
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('claude timed out')); }, CALL_TIMEOUT_MS);
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      const result = out.split('\n').filter(Boolean)
-        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-        .find((m) => m?.type === 'result');
-      if (!result || result.is_error || !result.structured_output) {
-        reject(new Error(`claude exit ${code}: ${(result?.result ?? err).toString().slice(0, 200)}`));
-        return;
-      }
-      // A batch with a candidate left unscored is unusable: the caller cannot tell
-      // a skipped photo from a bad one.
-      const verdict = result.structured_output;
-      const got = new Set((verdict.scores ?? []).map((s) => s.id));
-      const lost = req.images.map((i) => i.id).filter((id) => !got.has(id));
-      if (lost.length) {
-        reject(new Error(`no score for ${lost.join(', ')}`));
-        return;
-      }
-      resolve({ ...verdict, model: MODEL, ms: result.duration_ms ?? null });
-    });
-
-    child.stdin.end(`${JSON.stringify(reviewMessage(req))}\n`);
+async function review(body) {
+  const { output, ms } = await askClaude({
+    systemPrompt: SYSTEM_PROMPT, schema: SCHEMA, content: reviewContent(body), timeoutMs: CALL_TIMEOUT_MS,
   });
+  // A batch with a candidate left unscored is unusable: the caller cannot tell a
+  // skipped photo from a bad one.
+  const got = new Set((output.scores ?? []).map((s) => s.id));
+  const lost = body.images.map((i) => i.id).filter((id) => !got.has(id));
+  if (lost.length) throw new Error(`no score for ${lost.join(', ')}`);
+  return { ...output, model: MODEL, ms };
 }
+
+async function suggestTopics(body) {
+  const { output, ms } = await askClaude({
+    systemPrompt: topics.SYSTEM_PROMPT, schema: topics.SCHEMA,
+    content: topics.message(body), timeoutMs: topics.TIMEOUT_MS,
+  });
+  return { topics: output.topics ?? [], model: MODEL, ms };
+}
+
+const ROUTES = {
+  '/review': {
+    bad: (body) => badImages(body.images),
+    run: review,
+    log: (body, out) => `${body.kind ?? 'scene'} ${body.line?.idx ?? ''} `
+      + `${out.scores.map((s) => `${s.id}=${s.score}`).join(' ')}`,
+  },
+  '/topics': {
+    bad: topics.badRequest,
+    run: suggestTopics,
+    log: (body, out) => `topics asked=${body.count} got=${out.topics.length}`,
+  },
+};
 
 // A plain counting semaphore: callers past the limit wait their turn.
 let active = 0;
@@ -227,22 +211,13 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-/** Null when the batch is well-formed, otherwise the reason it is not. */
-function badImages(images) {
-  if (!Array.isArray(images) || !images.length || images.length > MAX_IMAGES) {
-    return `images must be an array of 1 to ${MAX_IMAGES}`;
-  }
-  if (images.some((i) => !i?.id || !i?.data)) return 'every image needs an id and base64 data';
-  if (new Set(images.map((i) => i.id)).size !== images.length) return 'image ids must be unique';
-  return null;
-}
-
 http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     send(res, 200, { ok: true, model: MODEL, active, waiting: waiting.length });
     return;
   }
-  if (req.method !== 'POST' || req.url !== '/review') {
+  const route = req.method === 'POST' ? ROUTES[req.url] : null;
+  if (!route) {
     send(res, 404, { error: 'not found' });
     return;
   }
@@ -262,20 +237,18 @@ http.createServer((req, res) => {
       send(res, 400, { error: 'body is not JSON' });
       return;
     }
-    const bad = badImages(body.images);
+    const bad = route.bad(body);
     if (bad) {
       send(res, 400, { error: bad });
       return;
     }
     const started = Date.now();
     try {
-      const verdict = await withSlot(() => askClaude(body));
-      console.log(`[imagereview] ${((Date.now() - started) / 1000).toFixed(1)}s `
-        + `${body.kind ?? 'scene'} ${body.line?.idx ?? ''} `
-        + `${verdict.scores.map((s) => `${s.id}=${s.score}`).join(' ')}`);
-      send(res, 200, verdict);
+      const out = await withSlot(() => route.run(body));
+      console.log(`[imagereview] ${((Date.now() - started) / 1000).toFixed(1)}s ${req.url} ${route.log(body, out)}`);
+      send(res, 200, out);
     } catch (e) {
-      console.log(`[imagereview] error: ${e.message}`);
+      console.log(`[imagereview] ${req.url} error: ${e.message}`);
       send(res, 503, { error: e.message });
     }
   });

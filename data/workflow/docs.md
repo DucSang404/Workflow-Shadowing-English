@@ -4,7 +4,7 @@ Cập nhật: 2026-10-04
 
 - **Workflow chính**: `JwSXDLLsNxY3e9CV` — active, `POST http://localhost:5678/webhook/shadowing`
 - **Workflow stub**: `jyx9sYJhVo74D48Q` — active, `/webhook/shadowing-stub`, thay node Groq bằng hội thoại canned (test pipeline không tốn quota)
-- **Chạy tự động**: workflow `daily` — dựng 18:00, Buffer đăng 19:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics.json` theo *ít dùng gần đây nhất*.
+- **Chạy tự động**: workflow `daily` — dựng 07:00 và 19:00, Buffer đăng 08:00 và 20:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics/pool.json` theo *ít dùng gần đây nhất* (lượt dùng ghi ở `topics/state.json`); pool gần cạn thì Claude tự thêm topic.
 - **Workflow đăng TikTok**: `/webhook/buffer-publish` — S3 → Buffer → TikTok công khai. **Chờ điền khoá**, xem mục B.
 - **Đường dự phòng**: `/webhook/tiktok-publish` — gọi thẳng TikTok, chỉ bỏ được draft vào hộp thư. Bị chặn ở Login Kit, xem mục B.
 - **Stack**: n8n 2.36.9 (+ffmpeg static) · `travisvn/openai-edge-tts` · Groq `openai/gpt-oss-120b`
@@ -275,6 +275,14 @@ Thay SD bằng ảnh Unsplash/Openverse. Claude chấm 0–100 theo lô 4, dùng
 cao nhất ≥ 72, không đạt thì vẫn dùng ảnh cao nhất và ghi FAIL. Không ảnh nào lặp
 trong một video. Ảnh bìa tìm bằng `coverQuery` qua slot `idx 0`. Spec:
 `docs/superpowers/specs/2026-10-10-stock-images-claude-review-design.md`.
+
+### Topic tự bổ sung + giữ 10 video + tách pool/state ✅ (2026-10-10)
+
+`topics.json` tách thành `topics/pool.json` (git) và `topics/state.json` (gitignored).
+Khi ≥ 90% pool đã dùng, `daily` gọi Claude trên host thêm 30 topic (lọc trùng bằng
+code). Sau mỗi lần đăng, `output/` chỉ giữ 10 run mới nhất. Webhook
+`daily-dry-run` chạy trọn chuỗi trừ Buffer. Spec:
+`docs/superpowers/specs/2026-10-10-topic-refill-output-retention-design.md`.
 
 ### Trang kết cuối video ✅ (2026-10-05)
 
@@ -567,7 +575,8 @@ bật Google Sheets API, share sheet cho email của service account).
 **Phương án $0 không cần Google**: dùng một file `topics.json` trong
 `/data/workflow/` — code node đọc/ghi trực tiếp, không cần credential, không
 cần mạng. Mất tính năng xem/sửa trên điện thoại. Nếu bạn chỉ cần chống trùng thì
-cách này **làm xong trong 15 phút**.
+cách này **làm xong trong 15 phút**. *(Đã làm theo hướng này; `topics.json` sau đó
+đã tách thành `topics/` (2026-10-10) — xem mục "Topic tự bổ sung".)*
 
 ---
 
