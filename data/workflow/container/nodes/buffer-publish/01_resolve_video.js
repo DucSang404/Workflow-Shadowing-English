@@ -44,7 +44,7 @@ if (explicit) {
 // Bucket, region and channel are config, not secrets, so they live in a plain
 // file. The ACCESS KEYS are not here and never reach this code - they sit in the
 // n8n credential store and only the AWS S3 and Buffer nodes ever see them. Same
-// split as the Pexels search, see container/nodes/shadowing/05_collect_pexels.js.
+// split as the Unsplash search, see container/nodes/shadowing/05_collect_stock.js.
 let cfg;
 try {
   cfg = JSON.parse(fs.readFileSync(`${ROOT}/publish.config.json`, 'utf8'));

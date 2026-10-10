@@ -22,9 +22,9 @@ const nodeCode = (file) =>
 const SYSTEM_PROMPT = [
   'You write short, natural English conversations for listening-and-shadowing practice.',
   'Return ONLY a JSON object of this shape:',
-  '{"caption":"<TikTok caption>","hashtags":["tag","tag"],"coverPrompt":"<establishing shot>",'
+  '{"caption":"<TikTok caption>","hashtags":["tag","tag"],"coverQuery":"<2-4 word stock photo search>",'
   + '"sentences":[{"speaker":"A","en":"<one English line>","vi":"<natural Vietnamese translation>",'
-  + '"imageQuery":"<2-4 word stock photo search>","imagePrompt":"<one descriptive sentence>"}]}',
+  + '"imageQuery":"<2-4 word stock photo search>"}]}',
   'Rules:',
   // Asked for in the same call as the dialogue rather than a second one: the Groq
   // free tier caps output tokens per minute, and a caption is ~40 of them against
@@ -44,38 +44,12 @@ const SYSTEM_PROMPT = [
   '- `imageQuery` is what a stock photo library is searched for to illustrate that line.',
   '  Concrete, photographable nouns only - "hotel reception desk", "handing over credit card".',
   '  Never abstract ideas, never names, never words like "conversation" or "person talking".',
-  // Two fields for two different consumers. A stock photo index wants keywords;
-  // a diffusion model wants a sentence. Measured: the keyword form
-  // "team standup meeting office whiteboard" produced an unrelated image at two
-  // different seeds, while "colleagues standing around a whiteboard in a bright
-  // modern office" produced exactly the scene asked for.
-  '- `imagePrompt` describes the SAME scene as one plain English sentence, the way',
-  '  you would describe a photograph to someone who cannot see it. 10 to 20 words.',
-  '  No camera jargon.',
-  // Phrased as what TO show, never as what to avoid: a diffusion model reads the
-  // positive prompt as a bag of things to include, so a negation in it is at
-  // best ignored and at worst a summons. An earlier version said "NO visible
-  // human face" and the generator drew a face anyway.
-  //
-  // ONE character, because the pictures are drawn by an anime model that wants a
-  // single clear subject. Measured: a group scene with no focal person came back
-  // as a grid of meaningless sketches. The speaker of the line is rendered as one
-  // of two recurring characters, conditioned on a reference portrait, so the
-  // sentence only has to say WHAT they are doing and WHERE.
-  // Backdrop for the title card. Deliberately empty of people: the channel name
-  // and the topic are printed across the middle of it, and a figure behind that
-  // text fights with it.
-  '- `coverPrompt` is ONE establishing shot of the place this conversation happens',
-  '  in, with NOBODY in it. Wide view, the setting itself. 10 to 18 words.',
-  '  Example: "An empty train platform at golden hour, long shadows on the tiles".',
-  '- `imagePrompt` shows exactly ONE person - the speaker of that line - doing',
-  '  something concrete, and then describes the PLACE around them in real detail.',
-  '  Start with "A girl" when speaker is A, or "A boy" when speaker is B.',
-  '  Spend most of the sentence on the setting: the room or street, the time of',
-  '  day, the light, the weather. The person is IN the scene, not filling it.',
-  '  Example: "A girl waiting at a quiet train platform at dusk, orange sky,',
-  '  empty tracks stretching away".',
-  '  Never a group, never a crowd, never a posed headshot, never a close-up face.',
+  // Backdrop for the title card. A place with nobody in it: the channel name and
+  // the topic are printed across the middle, and a figure behind that text
+  // fights with it. Claude also scores the cover candidates for a calm centre.
+  '- `coverQuery` is what a stock photo library is searched for to find ONE wide',
+  '  shot of the place this conversation happens in. 2-4 words naming the place,',
+  '  e.g. "empty train platform", "coffee shop interior".',
 ].join('\n');
 
 // Groq has retired llama-3.3-70b-versatile; gpt-oss-120b is the closest equivalent
@@ -105,7 +79,7 @@ const TTS_BODY = `={{ JSON.stringify({
 /** Node order is the execution order; connections are derived from it. */
 const CHAIN = ['Webhook', 'Prepare Run', 'Generate Dialogue', 'Parse & Normalize',
   'Synthesize Speech', 'Keep Successful Audio', 'Write Sentence Audio',
-  'Search Pexels', 'Collect Pexels', 'Fetch Scenes', 'Fetch Music',
+  'Search Unsplash', 'Collect Stock', 'Fetch Scenes', 'Fetch Music',
   'Probe Durations', 'Build SRT', 'Assemble Video', 'Build Response', 'Respond to Webhook'];
 
 function linearConnections(chain) {
@@ -234,20 +208,20 @@ function definition({ credentials }) {
       },
     },
     {
-      id: 'n-pexels',
-      name: 'Search Pexels',
+      id: 'n-unsplash',
+      name: 'Search Unsplash',
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.5,
-      position: at('Search Pexels'),
-      // Optional by design: with no key, a bad key or an exhausted quota this
-      // passes the error through and every scene falls back to Openverse.
+      position: at('Search Unsplash'),
+      // Optional by design: with no key, a bad key or the demo tier's 50/hour
+      // spent, this passes the error through and every scene leans on Openverse.
       onError: 'continueRegularOutput',
       retryOnFail: true,
       maxTries: 2,
       waitBetweenTries: 1000,
       parameters: {
         method: 'GET',
-        url: 'https://api.pexels.com/v1/search',
+        url: 'https://api.unsplash.com/search/photos',
         authentication: 'genericCredentialType',
         genericAuthType: 'httpHeaderAuth',
         sendQuery: true,
@@ -255,21 +229,27 @@ function definition({ credentials }) {
         queryParameters: {
           parameters: [
             { name: 'query', value: "={{ $('Parse & Normalize').item.json.imageQuery }}" },
-            { name: 'per_page', value: '3' },
+            // Ten, so both review batches can come from Unsplash before the
+            // slower Openverse search is needed. Still one request per scene.
+            { name: 'per_page', value: '10' },
             { name: 'orientation', value: 'landscape' },
+            { name: 'content_filter', value: 'high' },
           ],
         },
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: { parameters: [{ name: 'Accept-Version', value: 'v1' }] },
         options: { timeout: 20000 },
       },
-      credentials: { httpHeaderAuth: credentials.pexels },
+      credentials: { httpHeaderAuth: credentials.unsplash },
     },
     {
-      id: 'n-pexels-collect',
-      name: 'Collect Pexels',
+      id: 'n-stock-collect',
+      name: 'Collect Stock',
       type: 'n8n-nodes-base.code',
       typeVersion: 2,
-      position: at('Collect Pexels'),
-      parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('05_collect_pexels.js') },
+      position: at('Collect Stock'),
+      parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('05_collect_stock.js') },
     },
     {
       id: 'n-scenes',
@@ -284,6 +264,33 @@ function definition({ credentials }) {
         executeOnce: true,
         command: `=node ${IN_CONTAINER}/container/cli/fetch_scenes.js '{{ $('Prepare Run').first().json.workDir }}'`,
       },
+    },
+    // Side branch, below the main chain on purpose: see 06_unsplash_downloads.js.
+    // executionOrder v1 runs the upper branch to the end first, so this reports
+    // downloads after the webhook has answered and can never hold up a video.
+    {
+      id: 'n-unsplash-list',
+      name: 'Unsplash Downloads',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: [at('Fetch Scenes')[0] + 220, 220],
+      parameters: { mode: 'runOnceForAllItems', jsCode: nodeCode('06_unsplash_downloads.js') },
+    },
+    {
+      id: 'n-unsplash-track',
+      name: 'Track Unsplash Download',
+      type: 'n8n-nodes-base.httpRequest',
+      typeVersion: 4.5,
+      position: [at('Fetch Scenes')[0] + 440, 220],
+      onError: 'continueRegularOutput',
+      parameters: {
+        method: 'GET',
+        url: '={{ $json.downloadLocation }}',
+        authentication: 'genericCredentialType',
+        genericAuthType: 'httpHeaderAuth',
+        options: { timeout: 15000 },
+      },
+      credentials: { httpHeaderAuth: credentials.unsplash },
     },
     {
       id: 'n-music',
@@ -347,12 +354,16 @@ function definition({ credentials }) {
     },
   ];
 
+  const connections = linearConnections(CHAIN);
+  connections['Fetch Scenes'].main[0].push({ node: 'Unsplash Downloads', type: 'main', index: 0 });
+  connections['Unsplash Downloads'] = { main: [[{ node: 'Track Unsplash Download', type: 'main', index: 0 }]] };
+
   return {
     name: 'AI Shadowing Video Generator',
     slug: 'shadowing',
     webhookPath: 'shadowing',
     nodes,
-    connections: linearConnections(CHAIN),
+    connections,
     settings: { executionOrder: 'v1', saveManualExecutions: true, timezone: 'Asia/Ho_Chi_Minh' },
   };
 }

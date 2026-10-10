@@ -1,80 +1,79 @@
 #!/usr/bin/env node
 /**
- * Scene reviewer: Claude looks at each generated still and says whether it fits
- * the line of dialogue it illustrates.
+ * Claude on the host, for the parts of the pipeline the n8n container cannot do
+ * itself (the hardened image has no `claude` and cannot get one).
  *
  *   node host/imagereview/server.js        # :7861, loopback only
  *
  *   GET  /health
- *   POST /review   { image, mediaType, kind, topic, line, dialogue, character, prompt }
+ *   POST /review   { kind, topic, line, dialogue, images: [{ id, mediaType, data }] }
+ *               -> { required, scores: [{ id, present, missing, issues, score }], model, ms }
+ *   POST /topics   { existing, recent, count }
+ *               -> { topics, model, ms }                       (see topics.js)
  *
- * Why it exists: SD 1.5 at guidance 1.0 binds the prompt loosely. A line about
- * syrup in a coffee order came back as a boy standing in a school corridor, and
- * nothing in the pipeline could tell - every pixel decoded fine. Claude can tell,
- * so fetch_scenes.js sends each still here and regenerates the ones that fail.
+ * /review: a stock search matches keywords, not the line. A search for the syrup
+ * in a coffee order finds syrup on pancakes, and nothing in the pipeline can tell
+ * - every pixel decodes fine. Claude can tell, so fetch_scenes.js sends the
+ * candidates here and keeps the best one at or above its pass score.
  *
- * It runs on the HOST, like the generator, because it drives the `claude` CLI
- * you are already logged in to. The n8n image has no `claude` and cannot get one
- * (see CLAUDE.md, container constraints). The call is `claude -p` with:
- *   - the image sent inline over stream-json, so no tool is needed to read it
- *   - `--tools ""`: the reviewer can look, and do nothing else
- *   - `--json-schema`, so the verdict is parsed, never scraped out of prose
- *   - its own system prompt, and a cwd outside the project, so neither Claude
- *     Code's default prompt nor this repo's 40 KB CLAUDE.md is paid for per image
+ * This server only SCORES. The bar (72 by default) is applied in fetch_scenes.js,
+ * so moving it never means touching the prompt. Up to four candidates go in one
+ * call: seeing them side by side keeps the numbers consistent with each other, and
+ * it is a quarter of the calls. `node host/imagereview/check.js` re-checks the
+ * scale against a fixed fixture after any prompt or model change.
+ *
+ * How Claude is called lives in claude.js, shared by both routes.
  *
  * Bound to 127.0.0.1, not 0.0.0.0: Docker Desktop still routes
  * host.docker.internal to it (verified from inside shadowing-n8n), and nothing on
  * the LAN can spend your Claude usage.
  *
- * A reviewer that is down, slow or rate-limited answers 503 and the caller keeps
- * the unreviewed image. Review improves pictures; it must never cost a video.
+ * Down, slow or rate-limited, a route answers 503 and the caller carries on
+ * without it: an unreviewed scene, or no new topics until the next run. Claude
+ * improves the output; it must never cost a video.
  */
 const http = require('http');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { spawn } = require('child_process');
+const { MODEL, askClaude } = require('./claude');
+const topics = require('./topics');
 
 const PORT = Number(process.env.IMAGEREVIEW_PORT ?? 7861);
-// Sonnet over Haiku: the call is ~5 s either way, and the whole point is judging
-// whether a laptop is really a laptop.
-const MODEL = process.env.IMAGEREVIEW_MODEL ?? 'sonnet';
-const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
-const CALL_TIMEOUT_MS = 90000;
-// Reviews overlap with the GPU drawing the next scene, so two is enough to keep
-// up, and more would only spend usage faster.
+// Four images per call instead of one, so more than the single-image 90 s.
+const CALL_TIMEOUT_MS = 120000;
+// Scenes are reviewed while other scenes download, so two is enough to keep up,
+// and more would only spend usage faster. Shared by every route.
 const MAX_CONCURRENT = 2;
-const MAX_BODY = 12 * 1024 * 1024;
-
-// Read per request, like server.py does, so editing traits needs no restart.
-const TRAITS_FILE = path.join(__dirname, '..', '..', 'assets', 'characters', 'traits.json');
-function traitsFor(name) {
-  if (!name) return null;
-  try {
-    return JSON.parse(fs.readFileSync(TRAITS_FILE, 'utf8'))[name] ?? null;
-  } catch {
-    return null;
-  }
-}
+const MAX_IMAGES = 4;
+// Four 768 px thumbnails are ~1 MB of base64; this is headroom, not a target.
+const MAX_BODY = 16 * 1024 * 1024;
 
 const SCHEMA = {
   type: 'object',
   properties: {
     required: { type: 'array', items: { type: 'string' } },
-    present: { type: 'array', items: { type: 'string' } },
-    missing: { type: 'array', items: { type: 'string' } },
-    characterOk: { type: 'boolean' },
-    issues: { type: 'array', items: { type: 'string' } },
-    score: { type: 'integer', minimum: 0, maximum: 10 },
-    pass: { type: 'boolean' },
-    revisedPrompt: { type: 'string' },
+    scores: {
+      type: 'array',
+      items: {
+        type: 'object',
+        // present/missing/issues come before score so the number is written after
+        // the reasons for it, not before.
+        properties: {
+          id: { type: 'string' },
+          present: { type: 'array', items: { type: 'string' } },
+          missing: { type: 'array', items: { type: 'string' } },
+          issues: { type: 'array', items: { type: 'string' } },
+          score: { type: 'integer', minimum: 0, maximum: 100 },
+        },
+        required: ['id', 'present', 'missing', 'issues', 'score'],
+      },
+    },
   },
-  required: ['required', 'present', 'missing', 'characterOk', 'issues', 'score', 'pass', 'revisedPrompt'],
+  required: ['required', 'scores'],
 };
 
 const SYSTEM_PROMPT = `You are the picture editor for a short English-shadowing video.
-Each scene is an anime-style still drawn by Stable Diffusion 1.5 for ONE line of
-dialogue. Decide whether the still fits that line.
+Each scene is a stock PHOTO illustrating ONE line of dialogue. You are shown up to
+four candidate photos, each introduced by a label ("Candidate c1:" and so on), and
+you score every one of them.
 
 1. required: what the line makes the viewer expect to SEE. Only two kinds:
    - the SETTING the topic or line puts it in (an office, a cafe, a street, a
@@ -85,111 +84,113 @@ dialogue. Decide whether the still fits that line.
    A part of something stands for the whole: "the battery" or "the screen" of a
    laptop requires the laptop, not a visible battery or screen.
    Name each item plainly, without the line's adjectives: "coffee cup", not
-   "large iced latte in a clear cup". Skip what cannot be drawn: times, feelings,
-   abstract nouns (deadline, problem, tomorrow).
-2. present / missing: check each required item against the image. An object is
-   present if a viewer would recognise it at a glance on a phone; a vague shape
-   is missing. The setting is present when the place clearly reads as that kind
-   of place - one convincing cue is enough (a counter with cups or an espresso
+   "large iced latte in a clear cup". Skip what cannot be pictured: times,
+   feelings, abstract nouns (deadline, problem, tomorrow).
+   required depends on the line only, so it is the same for every candidate.
+2. For each candidate, present / missing: check each required item against that
+   photo. An object is present if a viewer would recognise it at a glance on a
+   phone. The setting is present when the place clearly reads as that kind of
+   place - one convincing cue is enough (a counter with cups or an espresso
    machine makes a cafe; desks with monitors make an office).
-3. characterOk: when a character description is given, that one character must be
-   the clear subject. Fail ONLY a clearly wrong person: wrong gender, a different
-   hair colour family (red or blonde for black), or a second prominent person.
-   Anime "black" hair is often drawn dark navy - that is black. Outfit drift is
-   expected from this generator: note it in issues, but it does not fail.
-   When no character is given, true only if no person is prominent.
-4. issues: anything else that would embarrass the channel - broken anatomy that
-   draws the eye (extra limbs, melted hands or faces), an incoherent or abstract
-   image, garbled text dominating the frame, a setting that contradicts the line.
-5. score: 0-10, how well the still serves the line.
-6. pass: true only if nothing required is missing, characterOk is true and no
-   issue is serious enough to embarrass the channel. Outfit drift alone is not.
-7. revisedPrompt: when it fails, a new Stable Diffusion prompt that fixes it. One
-   plain sentence, 12 to 30 words. Put the missing things first as concrete nouns.
-   One person doing one concrete thing in a named, detailed setting. Start with
-   "A girl" for character A or "A boy" for character B; with no character, describe
-   only the place. Never write negations ("no X", "without X") - the model reads
-   them as a request for X. Never describe hair or clothes; they are added
-   automatically. When it passes, repeat the original prompt unchanged.`;
+3. For each candidate, issues: anything that would embarrass the channel or fight
+   the subtitles - a watermark, a prominent brand logo, large text across the
+   frame, an obviously staged studio shot (white seamless backdrop, people
+   grinning and pointing at a screen), a collage, an illustration instead of a
+   photo.
+4. For each candidate, score 0-100 against these anchors:
+   90-100  the setting is right, every named object is clearly there, and what
+           is happening matches the line
+   72-89   the setting and the main named object are right; a secondary detail
+           is missing or the action only roughly matches
+   50-71   the setting is right but the main named object is missing, or the
+           object is there in the wrong setting
+   20-49   only loosely about the topic
+   0-19    unrelated, broken, or dominated by text, a logo or a watermark
+   Then subtract for issues: up to 15 for a staged look or a small logo, more for
+   anything that dominates the frame. Stay within 0-100.
+   The people in a stock photo are strangers. Never score their looks, gender,
+   age or how many there are - only whether what they are doing fits the line.
+   Score each candidate on the anchors, not by ranking it against the others; use
+   the others only to keep your numbers consistent.
+5. Return exactly one entry in scores for EVERY candidate id you were shown.`;
 
-/** The user turn: the still, then everything needed to judge it. */
-function reviewMessage(req) {
+/** The /review user content: each labelled candidate, then everything needed to judge them. */
+function reviewContent(req) {
   const lines = (req.dialogue ?? []).map((d) =>
     `${d.idx === req.line?.idx ? '>>' : '  '}${d.idx} ${d.speaker}: ${d.en}`);
-  const traits = traitsFor(req.character);
-  const text = req.kind === 'cover'
+  const context = req.kind === 'cover'
     ? [
       `Topic: ${req.topic}`,
-      'This still is the BACKDROP of the title card: an establishing shot of the place',
-      'the conversation happens in. The topic is printed across it, so it should show',
-      'the setting clearly with no prominent person. No character is given, and',
-      'the only required item is the setting itself.',
-      `Prompt it was drawn from: "${req.prompt}"`,
+      'These photos are candidates for the BACKDROP of the title card: a wide shot of',
+      'the place the conversation happens in. The only required item is the setting.',
+      'The channel name and topic are printed across the middle, so add up to 10 when',
+      'the centre of the frame is calm and uncluttered, and subtract up to 20 when a',
+      'person fills the centre.',
     ]
     : [
       `Topic: ${req.topic}`,
-      `Dialogue (this scene illustrates the line marked >>):`,
+      'Dialogue (the scene illustrates the line marked >>):',
       ...lines,
       `Line being illustrated: "${req.line?.en}"`,
       req.line?.vi ? `Its meaning in Vietnamese: "${req.line.vi}"` : null,
-      traits
-        ? `Character to show: ${req.character} - ${traits}`
-        : 'No character description is given.',
-      `Prompt it was drawn from: "${req.prompt}"`,
     ];
-  return {
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: req.mediaType ?? 'image/jpeg', data: req.image } },
-        { type: 'text', text: text.filter(Boolean).join('\n') },
-      ],
-    },
-  };
-}
 
-/** One `claude -p` call. Resolves to the structured verdict or throws. */
-function askClaude(req) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(CLAUDE_BIN, [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--tools', '',
-      '--strict-mcp-config',
-      '--no-session-persistence',
-      '--model', MODEL,
-      '--system-prompt', SYSTEM_PROMPT,
-      '--json-schema', JSON.stringify(SCHEMA),
-    ], {
-      cwd: os.tmpdir(),
-      env: { ...process.env, PATH: `${path.join(os.homedir(), '.local', 'bin')}:${process.env.PATH}` },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('claude timed out')); }, CALL_TIMEOUT_MS);
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      const result = out.split('\n').filter(Boolean)
-        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-        .find((m) => m?.type === 'result');
-      if (!result || result.is_error || !result.structured_output) {
-        reject(new Error(`claude exit ${code}: ${(result?.result ?? err).toString().slice(0, 200)}`));
-        return;
-      }
-      resolve({ ...result.structured_output, model: MODEL, ms: result.duration_ms ?? null });
-    });
-
-    child.stdin.end(`${JSON.stringify(reviewMessage(req))}\n`);
+  const content = [];
+  for (const img of req.images) {
+    content.push({ type: 'text', text: `Candidate ${img.id}:` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType ?? 'image/jpeg', data: img.data } });
+  }
+  content.push({
+    type: 'text',
+    text: [...context, `Score these candidates: ${req.images.map((i) => i.id).join(', ')}`]
+      .filter(Boolean).join('\n'),
   });
+  return content;
 }
+
+/** Null when the batch is well-formed, otherwise the reason it is not. */
+function badImages(images) {
+  if (!Array.isArray(images) || !images.length || images.length > MAX_IMAGES) {
+    return `images must be an array of 1 to ${MAX_IMAGES}`;
+  }
+  if (images.some((i) => !i?.id || !i?.data)) return 'every image needs an id and base64 data';
+  if (new Set(images.map((i) => i.id)).size !== images.length) return 'image ids must be unique';
+  return null;
+}
+
+async function review(body) {
+  const { output, ms } = await askClaude({
+    systemPrompt: SYSTEM_PROMPT, schema: SCHEMA, content: reviewContent(body), timeoutMs: CALL_TIMEOUT_MS,
+  });
+  // A batch with a candidate left unscored is unusable: the caller cannot tell a
+  // skipped photo from a bad one.
+  const got = new Set((output.scores ?? []).map((s) => s.id));
+  const lost = body.images.map((i) => i.id).filter((id) => !got.has(id));
+  if (lost.length) throw new Error(`no score for ${lost.join(', ')}`);
+  return { ...output, model: MODEL, ms };
+}
+
+async function suggestTopics(body) {
+  const { output, ms } = await askClaude({
+    systemPrompt: topics.SYSTEM_PROMPT, schema: topics.SCHEMA,
+    content: topics.message(body), timeoutMs: topics.TIMEOUT_MS,
+  });
+  return { topics: output.topics ?? [], model: MODEL, ms };
+}
+
+const ROUTES = {
+  '/review': {
+    bad: (body) => badImages(body.images),
+    run: review,
+    log: (body, out) => `${body.kind ?? 'scene'} ${body.line?.idx ?? ''} `
+      + `${out.scores.map((s) => `${s.id}=${s.score}`).join(' ')}`,
+  },
+  '/topics': {
+    bad: topics.badRequest,
+    run: suggestTopics,
+    log: (body, out) => `topics asked=${body.count} got=${out.topics.length}`,
+  },
+};
 
 // A plain counting semaphore: callers past the limit wait their turn.
 let active = 0;
@@ -215,7 +216,8 @@ http.createServer((req, res) => {
     send(res, 200, { ok: true, model: MODEL, active, waiting: waiting.length });
     return;
   }
-  if (req.method !== 'POST' || req.url !== '/review') {
+  const route = req.method === 'POST' ? ROUTES[req.url] : null;
+  if (!route) {
     send(res, 404, { error: 'not found' });
     return;
   }
@@ -235,19 +237,18 @@ http.createServer((req, res) => {
       send(res, 400, { error: 'body is not JSON' });
       return;
     }
-    if (!body.image) {
-      send(res, 400, { error: 'image (base64) is required' });
+    const bad = route.bad(body);
+    if (bad) {
+      send(res, 400, { error: bad });
       return;
     }
     const started = Date.now();
     try {
-      const verdict = await withSlot(() => askClaude(body));
-      console.log(`[imagereview] ${((Date.now() - started) / 1000).toFixed(1)}s `
-        + `${verdict.pass ? 'PASS' : 'FAIL'} ${verdict.score}/10 ${body.kind ?? 'scene'} `
-        + `${body.line?.idx ?? ''} missing=${JSON.stringify(verdict.missing)}`);
-      send(res, 200, verdict);
+      const out = await withSlot(() => route.run(body));
+      console.log(`[imagereview] ${((Date.now() - started) / 1000).toFixed(1)}s ${req.url} ${route.log(body, out)}`);
+      send(res, 200, out);
     } catch (e) {
-      console.log(`[imagereview] error: ${e.message}`);
+      console.log(`[imagereview] ${req.url} error: ${e.message}`);
       send(res, 503, { error: e.message });
     }
   });

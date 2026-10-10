@@ -1,0 +1,10 @@
+{
+  "kind": "scene",
+  "topic": "ordering coffee",
+  "line": { "idx": 1, "en": "Hi there, could I get a large iced latte, please?", "vi": "Chào bạn, cho tôi một ly latte đá lớn nhé?" },
+  "dialogue": [
+    { "idx": 1, "speaker": "A", "en": "Hi there, could I get a large iced latte, please?" },
+    { "idx": 2, "speaker": "B", "en": "Sure thing. Would you like any syrup with that?" }
+  ],
+  "expect": { "c1": "pass", "c2": "pass", "c3": "fail", "c4": "fail" }
+}

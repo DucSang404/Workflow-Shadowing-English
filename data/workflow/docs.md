@@ -4,7 +4,7 @@ Cập nhật: 2026-10-04
 
 - **Workflow chính**: `JwSXDLLsNxY3e9CV` — active, `POST http://localhost:5678/webhook/shadowing`
 - **Workflow stub**: `jyx9sYJhVo74D48Q` — active, `/webhook/shadowing-stub`, thay node Groq bằng hội thoại canned (test pipeline không tốn quota)
-- **Chạy tự động**: workflow `daily` — dựng 18:00, Buffer đăng 19:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics.json` theo *ít dùng gần đây nhất*.
+- **Chạy tự động**: workflow `daily` — dựng 07:00 và 19:00, Buffer đăng 08:00 và 20:00 mỗi ngày (Asia/Ho_Chi_Minh). Chủ đề xoay vòng từ `topics/pool.json` theo *ít dùng gần đây nhất* (lượt dùng ghi ở `topics/state.json`); pool gần cạn thì Claude tự thêm topic.
 - **Workflow đăng TikTok**: `/webhook/buffer-publish` — S3 → Buffer → TikTok công khai. **Chờ điền khoá**, xem mục B.
 - **Đường dự phòng**: `/webhook/tiktok-publish` — gọi thẳng TikTok, chỉ bỏ được draft vào hộp thư. Bị chặn ở Login Kit, xem mục B.
 - **Stack**: n8n 2.36.9 (+ffmpeg static) · `travisvn/openai-edge-tts` · Groq `openai/gpt-oss-120b`
@@ -126,6 +126,12 @@ lại `node host/deploy.js`. Ước lượng: 5 phút, nhưng cần vài run đ�
 
 ### 13. ~~Chất lượng ảnh sụt mạnh tuỳ chủ đề~~ ✅ ĐÃ CHỮA bằng SD 1.5 local (2026-10-04)
 
+> **Cập nhật 2026-10-10:** bỏ SD, quay về ảnh stock nhưng có **Claude chấm điểm**
+> (Unsplash + Openverse, lô 4 ảnh, ngưỡng 72). Vấn đề gốc của #13 — ảnh
+> stock lệch câu — giờ được bắt bằng điểm thay vì bằng máy vẽ; cảnh không đạt
+> vẫn dùng ảnh tốt nhất và ghi `pass:false` trong record. Xem CLAUDE.md, "Claude
+> chấm ảnh stock".
+
 Chạy lại đúng chủ đề tệ nhất — standup với team dev, trước đây **2/8** ảnh đúng —
 bằng model sinh ảnh local: **6/6 đúng chủ đề**, ~7.2s mỗi ảnh.
 
@@ -194,7 +200,10 @@ liệu khoa học. Nó **không** phải kho ảnh stock đời thường. Hệ 
 Chủ đề **văn phòng / IT / công nghệ hiện đại** là tệ nhất — gần như không có ảnh
 phù hợp trong kho CC0.
 
-**Cách sửa**: nạp key vào credential `Pexels API` (id `WDuL96mPAxBXPRp7`).
+> **2026-10-10:** Pexels đã gỡ khỏi pipeline (ngừng cấp key mới); thay bằng
+> Unsplash + Claude chấm điểm.
+
+**Cách sửa (cũ)**: nạp key vào credential `Pexels API` (id `WDuL96mPAxBXPRp7`).
 Kho Pexels đầy ảnh lập trình viên, họp nhóm, văn phòng. **Không phải sửa code** —
 nhánh Pexels đã lắp sẵn và đã test đường degrade. Lấy key free tại pexels.com/api.
 
@@ -209,7 +218,7 @@ Title card trước đây im lặng; giờ có một câu đọc lên để nh�
 
 | Tham số | Mặc định | Ghi chú |
 |---|---|---|
-| `introLine` | `"Listen, repeat, speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
+| `introLine` | `"Listen, repeat and speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
 | `introSpeed` | `1.0` | Hội thoại đọc 0.9 để nhại theo; câu này không nhại nên đọc tốc độ thường |
 | `introTailMs` | `500` | Khoảng nghỉ trước câu đầu tiên |
 | `introMs` | `1200` | Giờ chỉ là **fallback** khi không có câu thoại |
@@ -230,6 +239,10 @@ Sync giữ nguyên **0.0 ms** ở cả ba đường: có câu thoại, `introLin
 tuỳ biến.
 
 ### Claude review ảnh cảnh ✅ (2026-10-05)
+
+> **Đã thay thế 2026-10-10:** không còn vẽ lại bằng SD. Reviewer giờ chấm điểm
+> 0–100 ảnh stock theo lô — xem "Ảnh stock + Claude chấm điểm" phía dưới. Phần
+> sau mô tả bản cũ.
 
 Mỗi ảnh SD vẽ ra được Claude (qua `claude -p` trên máy, `host/imagereview/server.js`,
 cổng `127.0.0.1:7861`) đối chiếu với câu thoại: câu nhắc **laptop**, **công ty** thì ảnh
@@ -255,6 +268,21 @@ webhook trả tóm tắt ở `scenes.passed / failed / redraws`.
 
 ⚠ Phải chạy reviewer như LaunchAgent (xem `CLAUDE.md`) thì lịch 07:00/19:00 mới có review.
 Mỗi video tốn khoảng 10-20 lần gọi `claude -p` vào hạn mức gói Claude.
+
+### Ảnh stock + Claude chấm điểm ✅ (2026-10-10)
+
+Thay SD bằng ảnh Unsplash/Openverse. Claude chấm 0–100 theo lô 4, dùng ảnh
+cao nhất ≥ 72, không đạt thì vẫn dùng ảnh cao nhất và ghi FAIL. Không ảnh nào lặp
+trong một video. Ảnh bìa tìm bằng `coverQuery` qua slot `idx 0`. Spec:
+`docs/superpowers/specs/2026-10-10-stock-images-claude-review-design.md`.
+
+### Topic tự bổ sung + giữ 10 video + tách pool/state ✅ (2026-10-10)
+
+`topics.json` tách thành `topics/pool.json` (git) và `topics/state.json` (gitignored).
+Khi ≥ 90% pool đã dùng, `daily` gọi Claude trên host thêm 30 topic (lọc trùng bằng
+code). Sau mỗi lần đăng, `output/` chỉ giữ 10 run mới nhất. Webhook
+`daily-dry-run` chạy trọn chuỗi trừ Buffer. Spec:
+`docs/superpowers/specs/2026-10-10-topic-refill-output-retention-design.md`.
 
 ### Trang kết cuối video ✅ (2026-10-05)
 
@@ -317,7 +345,7 @@ luôn đọc được trên nền ảnh sáng.
 
 | Tầng | Cần key | Ghi chú |
 |---|---|---|
-| Pexels | có (free) | Ảnh stock chuyên nghiệp. Node `Search Pexels` giữ credential, ghi URL ra `pexels.json`; script CLI **không bao giờ thấy key**. |
+| ~~Pexels~~ (gỡ 2026-10-10) | có (free) | Ảnh stock chuyên nghiệp. Node `Search Pexels` giữ credential, ghi URL ra `pexels.json`; script CLI **không bao giờ thấy key**. |
 | Openverse | không | Ảnh Creative Commons. Lọc `cc0,pdm` trước rồi mới `by`; **loại hẳn `by-sa`** vì điều khoản share-alike sẽ lan sang cả video upload. |
 
 Groq sinh thêm `imageQuery` cho từng câu (danh từ cụ thể, chụp ảnh được).
@@ -327,8 +355,8 @@ Openverse cho ảnh đúng, còn khi rơi về topic chung chung thì ra ảnh t
 **Đo thực tế** (6 câu, chủ đề gọi đồ ăn sáng): 6/6 ảnh, toàn `cc0` nên không phải
 ghi nguồn; 5 ảnh rất khớp, 1 tạm được. Thêm ~20s vào thời gian dựng.
 
-**Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.
-Thêm key vào credential `Pexels API` là ảnh đẹp hơn ngay, không phải sửa code.
+~~**Chưa xong**: `PEXELS_API_KEY` chưa có nên hiện 100% ảnh đến từ Openverse.~~
+Đã thay bằng Unsplash (2026-10-10).
 Mức độ ảnh hưởng thay đổi rất mạnh theo chủ đề — xem hạn chế **#13**.
 
 **Đã thử và loại**: Pollinations (AI gen, keyless) — ảnh mờ, sai chủ đề và **có
@@ -547,7 +575,8 @@ bật Google Sheets API, share sheet cho email của service account).
 **Phương án $0 không cần Google**: dùng một file `topics.json` trong
 `/data/workflow/` — code node đọc/ghi trực tiếp, không cần credential, không
 cần mạng. Mất tính năng xem/sửa trên điện thoại. Nếu bạn chỉ cần chống trùng thì
-cách này **làm xong trong 15 phút**.
+cách này **làm xong trong 15 phút**. *(Đã làm theo hướng này; `topics.json` sau đó
+đã tách thành `topics/` (2026-10-10) — xem mục "Topic tự bổ sung".)*
 
 ---
 
@@ -559,7 +588,7 @@ Xếp theo tỉ lệ **giá trị / công sức**, cao xuống thấp.
 
 1. ✅ **Hai giọng cho hai người nói** — xem hạn chế #3.
 2. ✅ **Chuẩn hoá âm lượng** — xem hạn chế #4.
-3. ✅ **Xuất bản dọc 9:16** — param `orientation`: `landscape` | `portrait` | `both`.
+3. ✅ **Xuất bản dọc 9:16** — param `orientation`: `landscape` | `portrait` | `both`. Mặc định `portrait` từ 2026-10-10 (trước đó `landscape`).
    Portrait 1080×1920. Audio dựng 1 lần, encode 2 lần. Tên file phụ có hậu tố
    `_portrait`; file đầu giữ tên `<runId>.mp4` để không phá hợp đồng cũ.
 4. ✅ **Dọn `work/`** — xem hạn chế #6.

@@ -1,0 +1,779 @@
+{
+  "_comment": "Topic pool for the daily run. Edit freely. Claude appends to `topics` when most of it has been used; review its additions in git diff.",
+  "refill": {
+    "threshold": 0.9,
+    "batch": 30
+  },
+  "topics": [
+    {
+      "topic": "ordering breakfast at a small cafe",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for directions to the train station",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying a ticket at the train station",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "checking in at a hotel",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "returning a book at the library",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering a coffee to take away",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a shop assistant for a different size",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "paying at a convenience store",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a neighbour about the rubbish collection day",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "booking a table at a restaurant",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a pharmacist about a cold remedy",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "reporting a lost umbrella at a station office",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about the wifi password at a cafe",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying fruit at a market stall",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a taxi driver to stop at the corner",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "cancelling a dentist appointment on the phone",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a landlord about a leaking tap",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "signing up for a gym membership",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "collecting a parcel from the post office",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a waiter what is in a dish",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "renting a bicycle for the afternoon",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a receptionist where the lift is",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "complaining politely about a cold meal",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a classmate to borrow a pen",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "checking the departure time at an airport desk",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering a haircut at a barber shop",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a stranger to take a photo",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying a sim card for a phone",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about opening hours at a museum",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "returning a shirt that does not fit",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a colleague for help with a bug",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "explaining what you did yesterday at standup",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for more time on a deadline",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "joining a video call that will not connect",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a teammate to review your code",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "telling your manager you are blocked",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "handing over work before you go on leave",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking IT support to reset your password",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "explaining a feature to someone non technical",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "disagreeing politely in a planning meeting",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking what a word in an email means",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "booking a meeting room for the afternoon",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "introducing yourself on your first day",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a coworker to lunch",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "saying no to extra work without sounding rude",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for feedback after a presentation",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "reporting a problem with your laptop",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "explaining why you will be late to work",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about the work from home policy",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "thanking someone for covering your shift",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering a drink at a busy bar",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a flatmate to turn the music down",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "splitting the bill with friends",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a hotel to store your luggage",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "changing some money at a bank counter",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a bus driver which stop you need",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying a train ticket for the wrong day",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for the bill in a restaurant",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering food for someone with an allergy",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a hairdresser to cut it shorter",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "describing symptoms to a doctor",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "making an appointment on the phone",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a chemist how to take a medicine",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "calling in sick to work",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about the price of a repair",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "taking a laptop in for repair",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "arguing a charge on your bill",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a landlord to fix the heating",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "giving notice that you are moving out",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about a deposit refund",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "small talk about the weather",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking someone how their weekend was",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "congratulating a friend on a new job",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "apologising for being late",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "inviting a neighbour to a barbecue",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "turning down an invitation politely",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking someone to repeat what they said",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ending a phone call politely",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for someone's phone number",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "introducing two friends to each other",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "checking in at the airport",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about a delayed flight",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "going through airport security",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a hotel for a late checkout",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking directions to a museum on foot",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying a day pass for the metro",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a guide about the next tour",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "reporting a lost passport",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "renting a car at the airport",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a local what is worth seeing",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "opening a bank account",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about a phone contract",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "cancelling a subscription on the phone",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking for a refund on a late delivery",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "returning something bought online",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a seller if an item is still available",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "negotiating a price at a market",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about a warranty",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "reporting a card you cannot find",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about delivery options",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a teacher to explain again",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "joining a new class for the first time",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about course fees",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "handing in work late",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a classmate what the homework is",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "signing up for a language course",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about a certificate you need",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "talking about why you are learning English",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a gym instructor how to use a machine",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "booking a football pitch for the weekend",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about swimming pool opening times",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "joining a running club",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering tickets for a concert",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking what time a film starts",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "complaining about a noisy cinema",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a librarian to find a book",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a plumber how long it will take",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "ordering a takeaway on the phone",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a delivery driver to leave the parcel",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a neighbour to water your plants",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "reporting a broken street light",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking about recycling rules",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "buying paint for a room",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a shop to hold an item for you",
+      "addedAt": "2026-10-10",
+      "source": "manual"
+    },
+    {
+      "topic": "asking a barista for a recommendation",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "ordering lunch at a food court",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying vegetables from a market seller",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a butcher for a cut of meat",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "ordering a pizza at a counter",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a baker what is fresh today",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying a bus ticket at a counter",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a ferry worker about the schedule",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a petrol station attendant to fill the tank",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a mechanic about a strange car noise",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "checking a patient in at a clinic desk",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "picking up a prescription at the pharmacy",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking an optician about new glasses",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "getting a vaccination at a clinic",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a nurse where to wait",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "trying on shoes at a shoe shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "buying a gift at a souvenir shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a shop assistant about a discount",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "paying for groceries at a supermarket checkout",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a bank teller to deposit a cheque",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a bank clerk about a transfer fee",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "viewing an apartment with an agent",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a locksmith to open your door",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "dropping off clothes at a dry cleaner",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a tailor to shorten trousers",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a coworker to share a printer",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "meeting a visitor at the office reception",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a teacher about a school trip",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "asking a front desk clerk about breakfast hours",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    },
+    {
+      "topic": "renting skis at a sports shop",
+      "addedAt": "2026-10-10",
+      "source": "claude"
+    }
+  ]
+}
