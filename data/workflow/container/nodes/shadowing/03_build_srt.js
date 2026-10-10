@@ -85,6 +85,8 @@ let scenesMissing = [];
 let coverBackground = null;
 let coverReview = null;
 let reviewer = null;
+let passScore = null;
+let reviewCalls = 0;
 try {
   const raw = $('Fetch Scenes').first().json.stdout;
   if (raw) {
@@ -94,6 +96,8 @@ try {
     coverBackground = parsed.coverBackground ?? null;
     coverReview = parsed.coverReview ?? null;
     reviewer = parsed.reviewer ?? null;
+    passScore = parsed.passScore ?? null;
+    reviewCalls = parsed.reviewCalls ?? 0;
   }
 } catch (err) {
   console.log(`[shadowing] run ${cfg.runId}: no scenes (${err.message})`);
@@ -159,6 +163,8 @@ return [{
     scenesMissing,
     coverReview,
     reviewer,
+    passScore,
+    reviewCalls,
     introLine: introAudio?.en ?? null,
     introMs,
     introMissing: probe.introMissing ?? null,
