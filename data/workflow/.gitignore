@@ -25,3 +25,6 @@ assets/music/.openverse/
 
 # python bytecode từ host/imagegen
 __pycache__/
+
+# written by the daily workflow on every run; topics/pool.json is the part to edit
+topics/state.json
