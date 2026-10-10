@@ -68,7 +68,11 @@ Giữ nguyên, chỉ đổi `per_page` từ `3` → `6`. Query vẫn lấy từ
     "1": [ {"source":"pexels","id":"…","url":"…","photographer":"…","link":"…"} ] }
   ```
 
-- URL Unsplash dùng `urls.regular` kèm `&w=1920`; Pexels dùng `src.large2x`.
+- URL Unsplash dùng `urls.raw` kèm `&w=1920&fm=jpg&q=80` (`urls.regular` đã mang
+  sẵn `w=1080`); Pexels dùng `src.large2x`.
+- Item được ghép với câu bằng `$('Parse & Normalize').itemMatching(i)` (paired item),
+  không dùng `.all()[i]`: `Keep Successful Audio` lọc bỏ câu TTS hỏng nên index hai
+  bên lệch nhau.
 - **Xen kẽ** Unsplash / Pexels trong danh sách mỗi idx (u1, p1, u2, p2, …) để lô 1
   có cả hai nguồn.
 - Không còn bỏ qua `idx 0`: đó là slot ảnh bìa (mục 3.5).
@@ -95,15 +99,16 @@ kết quả bị vứt. Giờ query của nó là `coverQuery`, và `stock.json[
 
 Mỗi job (bìa trước, rồi từng câu):
 
-1. **Ứng viên** = `stock.json[idx]` (đã xen kẽ) + Openverse (`openverseCandidates`,
-   giữ nguyên logic query tiers / licence tiers) cho tới tối đa `MAX_CANDIDATES` = 12.
-   Bỏ ứng viên có khoá `source:id` (hoặc URL với Openverse) đã nằm trong `used`.
-2. **Tải + decode** lần lượt, giữ tối đa `MAX_REVIEW_POOL` = 8 ảnh hợp lệ
-   (`download()` giữ nguyên: User-Agent, retry 429/5xx, ffmpeg decode + scale 1920).
-   Mỗi ảnh hợp lệ tạo thêm bản thu nhỏ 768 px (`_thumb.jpg`) để gửi reviewer.
+1. **Ứng viên** = `stock.json[idx]` (đã xen kẽ, ≤ 12) rồi Openverse
+   (`openverseCandidates`, giữ nguyên logic query tiers / licence tiers, ≤ 10). Openverse
+   chỉ được gọi khi danh sách stock đã dùng hết mà chưa đủ ảnh — nó chậm.
+   Bỏ ứng viên có khoá `source:id` đã nằm trong `used` (`candidateKey`, mục dưới).
+2. **Tải + decode lười**: chỉ tải đủ 4 ảnh hợp lệ cho lô đang cần, tổng tối đa
+   8 (`download()` giữ nguyên: User-Agent, retry 429/5xx, ffmpeg decode + scale 1920).
+   Bản thu nhỏ 768 px (`_thumb.jpg`) tạo ngay trước khi gửi reviewer, xoá ngay sau.
 3. **Lô 1** = 4 ảnh đầu → `POST /review`. Áp `pickBest(scored, passScore, used)`.
    Có ảnh ≥ `passScore` → chọn, xong.
-4. Không có và còn ảnh → **lô 2** = 4 ảnh kế → gộp điểm hai lô → `pickBest`.
+4. Không có → tải thêm tối đa 4 ảnh → **lô 2** → gộp điểm hai lô → `pickBest`.
 5. Vẫn không đạt → ảnh điểm cao nhất trong mọi ảnh đã chấm, `pass:false`.
 6. Ảnh được chọn → thêm khoá vào `used`, đổi tên thành `scene_NNN.jpg`
    (`cover_bg.jpg` với bìa); xoá mọi file ứng viên và thumb còn lại.
@@ -158,18 +163,22 @@ Mỗi phần tử `scenes`:
 
 ### 3.7 Track Unsplash (mới)
 
-- Code node `06_unsplash_downloads.js`: đọc stdout của Fetch Scenes, phát một item
-  `{downloadLocation}` cho mỗi phần tử `unsplashChosen` (kể cả bìa). Không có phần
-  tử nào → vẫn phát **đúng một** item `{downloadLocation:""}`, vì node phát 0 item
-  sẽ làm n8n dừng cả nhánh phía sau (Fetch Music trở đi không chạy).
+Đây là **nhánh phụ** rẽ ra từ `Fetch Scenes`, không nằm trong chuỗi chính:
+
+```
+Fetch Scenes ─┬─▶ Fetch Music ─▶ … (chuỗi chính, y = 0)
+              └─▶ Unsplash Downloads ─▶ Track Unsplash Download (y = 220, cụt)
+```
+
+- Code node `Unsplash Downloads` (`06_unsplash_downloads.js`): đọc stdout của Fetch
+  Scenes, phát một item `{idx, downloadLocation}` cho mỗi phần tử `unsplashChosen`
+  (kể cả bìa). Không có → trả `[]`; nhánh phụ dừng ở đó mà không ảnh hưởng chuỗi
+  chính. (Nếu đặt trong chuỗi chính, 0 item sẽ chặn Fetch Music trở đi.)
 - HTTP node `Track Unsplash Download`: `GET {{ $json.downloadLocation }}`, credential
-  Unsplash, `onError: continueRegularOutput`. Item URL rỗng làm node báo lỗi và lỗi
-  đó được nuốt — chủ ý, để chuỗi tuyến tính (`linearConnections`) không phải rẽ
-  nhánh bằng IF node.
-- Không ảnh hưởng tới video; lỗi chỉ ghi log.
-- Node sau (Fetch Music) phải lấy dữ liệu bằng `$('Prepare Run')`/`$('Fetch Scenes')`
-  như hiện nay, không dựa vào `$json` của node này. Kiểm lại mọi biểu thức
-  `$json` ngay sau `Fetch Scenes` khi chèn node.
+  Unsplash, `onError: continueRegularOutput`.
+- `executionOrder: v1` chạy hết nhánh trên (y nhỏ hơn) rồi mới tới nhánh dưới, nên
+  nhánh phụ chạy sau khi webhook đã trả lời. Không ảnh hưởng tới video; lỗi chỉ
+  nằm trong execution log.
 
 ## 4. Reviewer (`host/imagereview/server.js`)
 
