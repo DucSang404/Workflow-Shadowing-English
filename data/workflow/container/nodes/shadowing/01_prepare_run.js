@@ -4,8 +4,9 @@
 const fs = require('fs');
 const ROOT = '/data/workflow';
 
-// TikTok / Shorts / Reels want 9:16. Landscape stays the default because it is
-// what you actually watch while practising at a desk.
+// TikTok / Shorts / Reels want 9:16, and that is the only place the channel
+// posts - buffer-publish refuses anything else - so portrait is the default.
+// Pass orientation landscape for a desk-practice copy.
 const FORMATS = {
   landscape: { key: 'landscape', width: 1280, height: 720 },
   portrait: { key: 'portrait', width: 1080, height: 1920 },
@@ -31,7 +32,7 @@ const clamp = (value, lo, hi, fallback) => {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
 };
 
-const orientation = String(body.orientation ?? 'landscape').toLowerCase();
+const orientation = String(body.orientation ?? 'portrait').toLowerCase();
 if (!['landscape', 'portrait', 'both'].includes(orientation)) {
   throw new Error(`\`orientation\` must be landscape, portrait or both — got "${orientation}"`);
 }
@@ -68,6 +69,15 @@ const outputs = formats.map((f, i) => ({
   path: `${ROOT}/output/${runId}${i === 0 ? '' : `_${f.key}`}.mp4`,
 }));
 
+// Scene pictures now come only from stock photo libraries. `ai` meant the local
+// SD generator, which the pipeline no longer calls; it is still accepted so old
+// callers keep working, and the run says it was ignored.
+const imageSourceRaw = String(body.imageSource ?? 'auto').toLowerCase();
+const imageSource = ['auto', 'stock'].includes(imageSourceRaw) ? imageSourceRaw : 'auto';
+const imageSourceWarning = imageSourceRaw === 'ai'
+  ? 'imageSource ai is no longer supported - stock photos were used'
+  : null;
+
 return [{
   json: {
     runId,
@@ -75,7 +85,7 @@ return [{
     manifestPath: `${workDir}/manifest.json`,
     srtPath: `${workDir}/subtitle.srt`,
     planPath: `${workDir}/plan.json`,
-    pexelsPath: `${workDir}/pexels.json`,
+    stockPath: `${workDir}/stock.json`,
     musicPath: `${workDir}/music.json`,
     outputPath: outputs[0].path,
     outputs,
@@ -101,18 +111,15 @@ return [{
       // as near-silence on a phone speaker.
       db: clamp(body.musicDb, -60, -6, -24),
     },
-    // Where scene pictures come from.
-    //   auto  -> generate locally if the service answers, else stock photos
-    //   ai    -> generate only; a run with the service down gets no pictures
-    //   stock -> Pexels then Openverse, as before
-    // `auto` is the default so forgetting to start the generator costs picture
-    // quality, never a failed run.
-    imageSource: ['auto', 'ai', 'stock'].includes(String(body.imageSource ?? '').toLowerCase())
-      ? String(body.imageSource).toLowerCase()
-      : 'auto',
-    // Claude reviews each generated still against its line and redraws the ones
-    // that miss (host/imagereview). Only matters when the generator is up, and a
-    // reviewer that is not running is skipped the same way. Off by request only.
+    // Kept for old callers; see imageSourceWarning above.
+    imageSource,
+    imageSourceWarning,
+    // Claude scores every stock candidate 0-100 against its line (host/imagereview)
+    // and the best one at or above this is used. Below it the best is still used
+    // and recorded as a fail - a weak picture beats a hole in the video.
+    passScore: Math.round(clamp(body.passScore, 0, 100, 72)),
+    // Off by request only; a reviewer that is not running is skipped the same way,
+    // and every scene then takes its first candidate that decodes.
     reviewImages: body.reviewImages !== false,
 
     // The branded title card burned onto the front of the video.
@@ -146,7 +153,7 @@ return [{
     // that the line is as long as the topic is: measured on Edge TTS, naming the
     // topic adds 1.4-2.4 s, so the opening is not the same length on every video.
     introLine: body.introLine === false ? '' : String(
-      body.introLine ?? 'Listen, repeat, speak: {topic}.',
+      body.introLine ?? 'Listen, repeat and speak: {topic}.',
     ).trim().slice(0, 200),
     // The dialogue is read at 0.9 so it can be repeated. The brand line is not
     // repeated, so it is read at a normal pace - which also saves ~0.7 s.

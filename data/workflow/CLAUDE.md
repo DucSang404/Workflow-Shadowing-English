@@ -17,7 +17,7 @@ viết code cho môi trường A rồi chạy ở môi trường B. Cây thư m�
 | `container/cli/` | Trong container n8n, gọi bởi Execute Command node | **Chỉ** `node` + `ffmpeg` + `ffprobe` + `sh` |
 | `container/nodes/` | Trong task runner của n8n, nội dung Code node | `node` + builtin trong `NODE_FUNCTION_ALLOW_BUILTIN` |
 | `infra/` | Không chạy — định nghĩa image | — |
-| `host/imagegen/` | macOS, **Python qua `uv`**, GPU Metal | torch + diffusers |
+| `host/imagegen/` | ⚠ **không còn trong pipeline** (2026-10-10) — macOS, Python qua `uv` | torch + diffusers |
 | `host/imagereview/` | macOS, Node, gọi CLI `claude` đã đăng nhập | `claude -p` |
 
 ### ⛔ Ràng buộc của container (đọc kỹ trước khi viết `container/**`)
@@ -64,11 +64,13 @@ data/workflow/
 │   │   ├── config.js         ← đọc .env
 │   │   └── n8n.js            ← REST client + upsertWorkflow
 │   ├── tiktok-auth.js        ← OAuth một lần; uỷ quyền token cho container
-│   ├── imagegen/             ← ⚠ PYTHON, chạy NATIVE trên máy, KHÔNG trong compose
+│   ├── imagegen/             ← ⚠ KHÔNG CÒN DÙNG (ảnh giờ lấy từ stock), giữ để tham khảo
 │   │   ├── server.py         ← SD1.5 + LCM trên MPS, HTTP :7860
 │   │   └── run.sh
-│   ├── imagereview/          ← Claude review từng ảnh cảnh, HTTP 127.0.0.1:7861
-│   │   └── server.js
+│   ├── imagereview/          ← Claude chấm điểm ảnh stock theo lô, HTTP 127.0.0.1:7861
+│   │   ├── server.js
+│   │   ├── check.js          ← kiểm thang điểm trên fixture
+│   │   └── fixtures/
 │   └── workflows/            ← MỘT FILE = MỘT WORKFLOW
 │       ├── shadowing.js
 │       ├── shadowing-stub.js
@@ -78,6 +80,7 @@ data/workflow/
 ├── container/                ← chạy trong container n8n
 │   ├── cli/                  ← gọi bởi Execute Command node
 │   │   ├── probe_durations.js
+│   │   ├── lib/pick_best.js  ← chọn ảnh theo điểm (+ pick_best.test.js, chạy trên host)
 │   │   ├── fetch_scenes.js
 │   │   ├── fetch_music.js
 │   │   ├── build_video.js
@@ -89,7 +92,8 @@ data/workflow/
 │       │   ├── 02_parse_normalize.js
 │       │   ├── 03_build_srt.js
 │       │   ├── 04_build_response.js
-│       │   └── 05_collect_pexels.js
+│       │   ├── 05_collect_stock.js
+│       │   └── 06_unsplash_downloads.js
 │       ├── tiktok-publish/
 │       │   ├── 01_resolve_video.js
 │       │   └── 02_build_response.js
@@ -178,15 +182,14 @@ node host/inspect-execution.js 12   # một execution cụ thể
 node host/verify-sync.js            # audit drift phụ đề của run mới nhất
 node host/verify-sync.js <runId>    # exit code != 0 nếu lệch — dùng được làm cổng kiểm tra
 
-# sinh ảnh cảnh bằng model local (tuỳ chọn; không bật thì tự dùng ảnh stock)
-host/imagegen/run.sh &              # lần đầu tải ~5.7 GB, nạp model ~80s
-curl -s localhost:7860/health
-#   imageSource: auto (mặc định) | ai (bắt buộc có generator) | stock
-
-# Claude review ảnh cảnh (tuỳ chọn; không bật thì ảnh không được review)
+# Claude chấm ảnh stock (tuỳ chọn; không bật thì mỗi cảnh lấy ứng viên đầu tiên)
 node host/imagereview/server.js &   # dùng `claude` đã đăng nhập, cổng 127.0.0.1:7861
 curl -s localhost:7861/health
+node host/imagereview/check.js      # kiểm thang điểm sau mỗi lần sửa prompt/model
 #   reviewImages: true (mặc định) | false
+#   passScore: 72 (mặc định) — ảnh cao nhất ≥ ngưỡng được dùng; không đạt vẫn dùng, ghi FAIL
+
+node --test container/cli/lib/*.test.js      # test logic chọn ảnh
 
 # test không tốn quota Groq (free tier chỉ ~1 video/phút)
 curl -X POST http://localhost:5678/webhook/shadowing-stub \
@@ -205,7 +208,7 @@ Workflow **`daily`** (`host/workflows/daily.js`) dựng lúc **18:00** và hẹn
 webhook `shadowing` và `buffer-publish` chứ không nhân bản node của chúng — hai
 endpoint đó là thứ đã được bấm tay suốt quá trình, một đường chạy khác sẽ là thêm
 một thứ nữa phải tin. Một tiếng dự phòng giữa dựng và đăng là có chủ ý: dựng mất
-~100s khi mọi thứ ngoan, nhưng nó phải với tới Groq, model ảnh và S3.
+~100s khi mọi thứ ngoan, nhưng nó phải với tới Groq, ảnh stock, Claude và S3.
 
 **Chủ đề lấy từ `topics.json`, chọn theo *ít dùng gần đây nhất*** — không phải
 ngẫu nhiên, vì ngẫu nhiên lặp lại sớm hơn người ta tưởng nhiều. Danh sách tự xoay
@@ -225,15 +228,15 @@ caffeinate -s                                      # giữ thức, chạy trong 
 sudo pmset repeat wakeorpoweron MTWRFSU 17:55:00   # hoặc tự thức trước 18:00
 ```
 
-**Generator ảnh cũng phải chạy lúc 18:00**, không thì ảnh rơi về Pexels/Openverse
-và mất hai nhân vật — video vẫn ra, chỉ mất bản sắc. Có sẵn LaunchAgent:
+**Generator ảnh không còn dùng** (2026-10-10). Nếu LaunchAgent cũ còn nạp thì gỡ
+để khỏi chiếm ~3 GB RAM vô ích:
 
 ```bash
-cp host/imagegen/com.shawnspace.imagegen.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+launchctl unload ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
+rm ~/Library/LaunchAgents/com.shawnspace.imagegen.plist
 ```
 
-**Reviewer cũng vậy**, không thì mọi cảnh ra bản vẽ đầu tiên, không ai kiểm:
+**Reviewer phải chạy lúc 18:00**, không thì mọi cảnh lấy ứng viên đầu tiên, không ai chấm:
 
 ```bash
 cp host/imagereview/com.shawnspace.imagereview.plist ~/Library/LaunchAgents/
@@ -355,8 +358,17 @@ tồn tại ở đó, không có bản sao nào khác. API key cũ vẫn dùng �
 | `N8N_RUNNERS_ENABLED=true` | Code node trong n8n 2.x cần task runner |
 
 `.env` còn giữ **id** của credential (`CRED_GROQ_ID`, `CRED_EDGETTS_ID`,
-`CRED_PEXELS_ID`, `CRED_AWS_ID`, `CRED_BUFFER_ID`) — chỉ là id, không phải giá trị.
-`host/deploy.js` nối chúng vào node lúc deploy.
+`CRED_UNSPLASH_ID`, `CRED_AWS_ID`, `CRED_BUFFER_ID`) — chỉ là id,
+không phải giá trị. `host/deploy.js` nối chúng vào node lúc deploy.
+
+**Unsplash** là credential `httpHeaderAuth`: name `Authorization`, value
+`Client-ID <access key>`. Bản demo 50 request/giờ — một run ~7–9 request. API
+guidelines của họ bắt gọi `download_location` cho mỗi ảnh dùng; nhánh phụ
+`Unsplash Downloads → Track Unsplash Download` sau `Fetch Scenes` làm việc đó.
+
+**Pexels đã gỡ (2026-10-10).** Key chưa từng hợp lệ, mỗi run tốn 14 request 401,
+và Pexels đã ngừng cấp key mới. Credential `Pexels API` vẫn còn trong n8n nhưng
+không node nào dùng.
 
 ---
 
@@ -466,8 +478,8 @@ Nên một response có thể 200, `errors` rỗng, mà **không đăng gì cả
 
 Mọi bước chạm vào khoá đều là **node gốc của n8n** — `awsS3` dùng credential `aws`,
 HTTP Request dùng `httpHeaderAuth` cho Buffer. Khoá do credential store mã hoá giữ
-và sửa trên UI; **không Code node nào nhìn thấy chúng**. Đúng kiểu Pexels đã làm
-(xem `05_collect_pexels.js`).
+và sửa trên UI; **không Code node nào nhìn thấy chúng**. Đúng kiểu Unsplash đã làm
+(xem `05_collect_stock.js`).
 
 Thứ không phải khoá — bucket, region, prefix, channelId — nằm ở
 **`publish.config.json`**, có trong git để diff được. Lưu ý `s3.region` ở đây phải
@@ -530,6 +542,10 @@ nằm sau cue cuối nên không dịch phụ đề, nhưng **file dài thêm `o
 `record.outroSec` khi so độ dài mp4, không thì báo lệch đúng bằng độ dài trang kết.
 
 ### Sinh ảnh cảnh bằng SD 1.5 (chạy trên host)
+
+> ⚠ **Lịch sử — không còn trong pipeline từ 2026-10-10.** Ảnh cảnh giờ lấy từ
+> Unsplash/Openverse và được Claude chấm điểm (mục kế tiếp). Phần dưới giữ
+> lại vì các con số đo được vẫn đúng nếu có ngày quay lại sinh ảnh.
 
 **Không thể đưa vào `docker-compose`.** Docker Desktop trên macOS không với được
 GPU Metal — đã kiểm `/dev` trong container, không có thiết bị GPU nào. Chạy trong
@@ -659,43 +675,37 @@ với ~20s khi dùng ảnh stock.
 generator bật — chạy song song chỉ xếp hàng chờ nhau trong khi nhân đôi bộ nhớ
 đỉnh, và 16GB thì đó là đường dẫn tới swap chứ không phải tới tốc độ.
 
-### Claude review ảnh cảnh (`host/imagereview/`)
+### Claude chấm ảnh stock (`host/imagereview/`)
 
-SD 1.5 ở guidance 1.0 bám prompt rất lỏng, và không gì trong pipeline nhận ra: một
-câu về siro trong quán cà phê ra cảnh **cậu bé đứng ở hành lang trường học**, decode
-hoàn hảo. Nên mỗi ảnh sinh ra được gửi cho Claude, đối chiếu với **câu thoại** (đồ vật
-câu nhắc tên + bối cảnh của chủ đề) và **nhân vật**; trượt thì vẽ lại bằng prompt
-Claude viết lại, tối đa `MAX_DRAWS` = 3 lần, giữ bản tốt nhất.
+Tìm ảnh stock khớp **từ khoá**, không khớp **câu**: tìm siro cho câu gọi cà phê ra
+siro trên bánh pancake, decode hoàn hảo. Nên mỗi cảnh có tới 8 ứng viên
+(10 kết quả Unsplash trong `stock.json`, hết thì Openverse), Claude chấm **0–100** từng
+ảnh theo lô 4, và `fetch_scenes.js` dùng ảnh cao nhất **≥ `passScore`** (mặc định
+**72**). Lô 1 không có ảnh đạt thì chấm lô 2; vẫn không đạt thì **vẫn dùng ảnh cao
+nhất** và ghi `pass:false` — ảnh yếu hơn lỗ trong video. Không ảnh nào dùng hai lần
+trong một video (`candidateKey` + `used` trong `pickBest`).
 
-- **Chạy trên host, gọi `claude -p`** — không phải API key. Image n8n không có `claude`.
-  Ảnh đi **inline qua stream-json** (không cần tool đọc file), `--tools ""` (chỉ nhìn,
-  không làm gì khác), `--json-schema` (verdict được parse, không moi từ văn xuôi),
-  `--system-prompt` riêng và `cwd` ngoài repo — để không trả tiền cho prompt mặc định
-  của Claude Code và 40 KB `CLAUDE.md` này trên **mỗi ảnh**.
+- **Server chỉ chấm, không quyết.** Ngưỡng nằm ở `fetch_scenes.js`/`passScore`, nên
+  đổi ngưỡng không đụng prompt. Thang điểm có mốc nằm trong `SYSTEM_PROMPT` (90+ đủ
+  hết; 72–89 đúng bối cảnh + đồ vật chính; 50–71 thiếu đồ vật chính…).
+- **`node host/imagereview/check.js`** gửi lô fixture (2 ảnh đúng, 2 ảnh sai) và đòi
+  ≥72 / <50. Chạy sau **mọi** lần sửa prompt hoặc đổi model — con số 72 chỉ có
+  nghĩa khi phép kiểm này còn qua. Ảnh fixture sai thì thay ảnh, đừng hạ ngưỡng.
+- **Lô 4 ảnh, thumb 768 px.** Thấy các ảnh cạnh nhau thì điểm nhất quán hơn chấm
+  từng ảnh, và chỉ tốn ¼ số lần gọi. Ảnh 1920 px không chấm chính xác hơn.
+- **Chạy trên host, gọi `claude -p`** — không phải API key. Ảnh đi inline qua
+  stream-json, `--tools ""`, `--json-schema`, `--system-prompt` riêng, `cwd` ngoài
+  repo — để không trả tiền cho prompt mặc định và `CLAUDE.md` này trên mỗi lần gọi.
 - **`--bare` không dùng được**: nó bắt buộc `ANTHROPIC_API_KEY`, bỏ qua đăng nhập OAuth.
-- **Bind `127.0.0.1`, không phải `0.0.0.0`.** Docker Desktop vẫn route
-  `host.docker.internal` tới loopback (đã kiểm từ trong `shadowing-n8n`), và máy khác
-  trong LAN không tiêu được quota Claude của bạn.
-- **Đo được: ~6 s mỗi lần review.** Hai cảnh chạy song song để review cảnh này trong
-  lúc GPU vẽ cảnh kia; `onGpu()` vẫn giữ việc vẽ tuần tự.
-- **`REVIEW_BUDGET_MS` = 180 s** — sau đó không vẽ lại nữa. Workflow `daily` cho cả
-  lần dựng 540 s; reviewer chậm hay bị rate-limit không được phép ăn hết phần đó.
-- **Ảnh nền title card xếp hàng ĐẦU TIÊN**, trước các cảnh. Xếp cuối thì nó tới lượt
-  khi budget đã hết và luôn ra bản vẽ đầu — mà nó chính là bìa trên lưới profile.
-- Reviewer chết / timeout / trả lỗi → giữ ảnh chưa review. Review làm ảnh đẹp hơn,
-  **không bao giờ được làm mất video**.
-
-**Độ khắt khe đã phải chỉnh một lần, đừng siết lại mò.** Bản đầu bắt cả đồ vật *suy
-ra* (giá tiền → máy tính tiền) và trang phục nhân vật → **0/6 cảnh qua** dù cảnh nhìn
-rõ là quán cà phê. Luật hiện tại: chỉ bối cảnh + tối đa 2 đồ vật **câu nhắc tên**; bộ
-phận đại diện cho cả vật ("pin" laptop → laptop); nhân vật chỉ trượt khi **sai người**
-(giới tính, họ màu tóc khác hẳn) — lệch trang phục là hạn chế đã biết của generator,
-ghi vào `issues` chứ không đánh trượt.
-
-⚠ **Giới hạn thật nằm ở generator, không ở reviewer.** Đồ nhỏ (sạc, pin, chai siro,
-thẻ) SD 1.5 gần như không vẽ ra được dù prompt viết lại đặt chúng lên đầu — vẽ lại
-nâng điểm 2 → 4-5 chứ hiếm khi qua. Bối cảnh và đồ lớn (văn phòng, laptop) thì vẽ lại
-sửa được.
+- **Bind `127.0.0.1`.** Docker Desktop vẫn route `host.docker.internal` tới loopback.
+- **`REVIEW_BUDGET_MS` = 180 s** — sau đó không gửi lô mới. Ảnh bìa xếp **đầu tiên**
+  vì nó là bìa trên lưới profile.
+- Reviewer chết / timeout / thiếu điểm cho một ảnh → cảnh đó lấy ứng viên đầu
+  tiên decode được. Review làm ảnh đẹp hơn, **không bao giờ được làm mất video**.
+- **Người trong ảnh stock là người lạ.** Không còn kiểm nhân vật A/B; bản sắc nhân
+  vật cố định đã bỏ cùng với SD.
+- **Ảnh bìa dùng slot `idx 0`** — item câu thương hiệu vốn đã đi qua node search;
+  query của nó là `coverQuery` Groq sinh ra.
 
 ### Gọi API ảnh bên ngoài
 
