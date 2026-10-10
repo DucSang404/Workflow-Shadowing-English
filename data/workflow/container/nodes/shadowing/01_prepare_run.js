@@ -4,8 +4,9 @@
 const fs = require('fs');
 const ROOT = '/data/workflow';
 
-// TikTok / Shorts / Reels want 9:16. Landscape stays the default because it is
-// what you actually watch while practising at a desk.
+// TikTok / Shorts / Reels want 9:16, and that is the only place the channel
+// posts - buffer-publish refuses anything else - so portrait is the default.
+// Pass orientation landscape for a desk-practice copy.
 const FORMATS = {
   landscape: { key: 'landscape', width: 1280, height: 720 },
   portrait: { key: 'portrait', width: 1080, height: 1920 },
@@ -31,7 +32,7 @@ const clamp = (value, lo, hi, fallback) => {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
 };
 
-const orientation = String(body.orientation ?? 'landscape').toLowerCase();
+const orientation = String(body.orientation ?? 'portrait').toLowerCase();
 if (!['landscape', 'portrait', 'both'].includes(orientation)) {
   throw new Error(`\`orientation\` must be landscape, portrait or both — got "${orientation}"`);
 }
@@ -152,7 +153,7 @@ return [{
     // that the line is as long as the topic is: measured on Edge TTS, naming the
     // topic adds 1.4-2.4 s, so the opening is not the same length on every video.
     introLine: body.introLine === false ? '' : String(
-      body.introLine ?? 'Listen, repeat, speak: {topic}.',
+      body.introLine ?? 'Listen, repeat and speak: {topic}.',
     ).trim().slice(0, 200),
     // The dialogue is read at 0.9 so it can be repeated. The brand line is not
     // repeated, so it is read at a normal pace - which also saves ~0.7 s.

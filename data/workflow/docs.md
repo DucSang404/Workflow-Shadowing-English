@@ -218,7 +218,7 @@ Title card trước đây im lặng; giờ có một câu đọc lên để nh�
 
 | Tham số | Mặc định | Ghi chú |
 |---|---|---|
-| `introLine` | `"Listen, repeat, speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
+| `introLine` | `"Listen, repeat and speak: {topic}."` | `{brand}`/`{topic}` được thay. `false` = card im lặng như cũ |
 | `introSpeed` | `1.0` | Hội thoại đọc 0.9 để nhại theo; câu này không nhại nên đọc tốc độ thường |
 | `introTailMs` | `500` | Khoảng nghỉ trước câu đầu tiên |
 | `introMs` | `1200` | Giờ chỉ là **fallback** khi không có câu thoại |
@@ -579,7 +579,7 @@ Xếp theo tỉ lệ **giá trị / công sức**, cao xuống thấp.
 
 1. ✅ **Hai giọng cho hai người nói** — xem hạn chế #3.
 2. ✅ **Chuẩn hoá âm lượng** — xem hạn chế #4.
-3. ✅ **Xuất bản dọc 9:16** — param `orientation`: `landscape` | `portrait` | `both`.
+3. ✅ **Xuất bản dọc 9:16** — param `orientation`: `landscape` | `portrait` | `both`. Mặc định `portrait` từ 2026-10-10 (trước đó `landscape`).
    Portrait 1080×1920. Audio dựng 1 lần, encode 2 lần. Tên file phụ có hậu tố
    `_portrait`; file đầu giữ tên `<runId>.mp4` để không phá hợp đồng cũ.
 4. ✅ **Dọn `work/`** — xem hạn chế #6.
